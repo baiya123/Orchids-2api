@@ -1,14 +1,15 @@
 package tiktoken
 
 import (
+	"math"
 	"unicode"
 )
 
 // EstimateTokens 估算文本的 token 数量
 // 使用近似算法：
-// - 英文单词约 0.75 token/word
-// - 中文字符约 1.5 token/char
-// - 数字和特殊字符单独计算
+// - 英文/数字按每 4 个字符约 1 token
+// - CJK 字符约 2 tokens/char
+// - 标点符号按 1 token 计
 func EstimateTokens(text string) int {
 	if text == "" {
 		return 0
@@ -26,7 +27,7 @@ func EstimateTokens(text string) int {
 					inWord = true
 					wordLength = 0
 				}
-				wordLength += 4
+				wordLength++
 			} else {
 				// 标点符号和空格
 				if inWord {
@@ -39,14 +40,18 @@ func EstimateTokens(text string) int {
 					tokens++
 				}
 			}
+			continue
+		}
+
+		// 非 ASCII 字符（主要是中文等亚洲语言）
+		if inWord {
+			tokens += estimateWordTokens(wordLength)
+			inWord = false
+		}
+		if IsCJK(r) {
+			tokens += 2
 		} else {
-			// 非 ASCII 字符（主要是中文等亚洲语言）
-			if inWord {
-				tokens += estimateWordTokens(wordLength)
-				inWord = false
-			}
-			// 中文等复杂字符通常约 1.5 tokens
-			tokens += 10
+			tokens++
 		}
 	}
 
@@ -59,22 +64,12 @@ func EstimateTokens(text string) int {
 }
 
 // estimateWordTokens 估算英文单词的 token 数量
-// 常见子词分词规则：
-// - 1-4 字符的词通常约 1 token
-// - 5-8 字符的词通常约 1-2 tokens
-// - 9-12 字符的词通常约 2 tokens
-// - 更长的词约每 4 字符 1 token
+// 近似规则：每 4 个字符约 1 token
 func estimateWordTokens(length int) int {
-	if length <= 4 {
-		return 1
+	if length <= 0 {
+		return 0
 	}
-	if length <= 8 {
-		return 1 + (length-4)/4
-	}
-	if length <= 12 {
-		return 2 + (length-8)/5
-	}
-	return 3 + (length-12)/4
+	return (length + 3) / 4
 }
 
 // EstimateInputTokens 估算输入 prompt 的 token 数量
@@ -100,13 +95,45 @@ func EstimateChineseTokens(text string) int {
 	return int(float64(count) * 1.5)
 }
 
-// EstimateTextTokens 简单估算：每个字符算 4 个 token
+// EstimateTextTokens 简单估算：CJK 字符约 1.5 token/char，ASCII 单词约 1 token/word
 func EstimateTextTokens(text string) int {
-	count := 0
-	for range text {
-		count++
+	if text == "" {
+		return 0
 	}
-	return count / 3
+
+	var tokens float64
+	inWord := false
+
+	for _, r := range text {
+		if r < 128 {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				if !inWord {
+					inWord = true
+				}
+			} else {
+				if inWord {
+					tokens += 1
+					inWord = false
+				}
+				if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+					tokens += 1
+				}
+			}
+			continue
+		}
+
+		if inWord {
+			tokens += 1
+			inWord = false
+		}
+		tokens += 1.5
+	}
+
+	if inWord {
+		tokens += 1
+	}
+
+	return int(math.Round(tokens))
 }
 
 // EstimateMessagesTokens 估算消息列表的 token 数量

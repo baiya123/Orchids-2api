@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"orchids-api/internal/config"
 	"orchids-api/internal/debug"
@@ -17,6 +21,11 @@ import (
 )
 
 const upstreamURL = "https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io/agent/coding-agent"
+
+const (
+	defaultTokenTTL = 5 * time.Minute
+	tokenExpirySkew = 30 * time.Second
+)
 
 type Client struct {
 	config     *config.Config
@@ -49,6 +58,18 @@ type SSEMessage struct {
 	Raw   map[string]interface{} `json:"-"`
 }
 
+type cachedToken struct {
+	token     string
+	expiresAt time.Time
+}
+
+var tokenCache = struct {
+	mu    sync.RWMutex
+	items map[string]cachedToken
+}{
+	items: map[string]cachedToken{},
+}
+
 func New(cfg *config.Config) *Client {
 	return &Client{
 		config:     cfg,
@@ -74,6 +95,14 @@ func NewFromAccount(acc *store.Account) *Client {
 }
 
 func (c *Client) GetToken() (string, error) {
+	if token := os.Getenv("UPSTREAM_TOKEN"); token != "" {
+		return token, nil
+	}
+
+	if cached, ok := getCachedToken(c.config.SessionID); ok {
+		return cached, nil
+	}
+
 	url := fmt.Sprintf("https://clerk.orchids.app/v1/client/sessions/%s/tokens?__clerk_api_version=2025-11-10&_clerk_js_version=5.117.0", c.config.SessionID)
 
 	req, err := http.NewRequest("POST", url, strings.NewReader("organization_id="))
@@ -100,6 +129,7 @@ func (c *Client) GetToken() (string, error) {
 		return "", err
 	}
 
+	setCachedToken(c.config.SessionID, tokenResp.JWT)
 	return tokenResp.JWT, nil
 }
 
@@ -129,7 +159,8 @@ func (c *Client) SendRequest(ctx context.Context, prompt string, chatHistory []i
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, bytes.NewReader(body))
+	url := getUpstreamURL()
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -142,12 +173,12 @@ func (c *Client) SendRequest(ctx context.Context, prompt string, chatHistory []i
 	// 记录上游请求
 	if logger != nil {
 		headers := map[string]string{
-			"Accept":              "text/event-stream",
-			"Authorization":       "Bearer [REDACTED]",
-			"Content-Type":        "application/json",
+			"Accept":                "text/event-stream",
+			"Authorization":         "Bearer [REDACTED]",
+			"Content-Type":          "application/json",
 			"X-Orchids-Api-Version": "2",
 		}
-		logger.LogUpstreamRequest(upstreamURL, headers, payload)
+		logger.LogUpstreamRequest(url, headers, payload)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -223,4 +254,87 @@ func (c *Client) SendRequest(ctx context.Context, prompt string, chatHistory []i
 	}
 
 	return nil
+}
+
+func getUpstreamURL() string {
+	if value := os.Getenv("UPSTREAM_URL"); value != "" {
+		return value
+	}
+	return upstreamURL
+}
+
+func getCachedToken(sessionID string) (string, bool) {
+	if sessionID == "" {
+		return "", false
+	}
+
+	tokenCache.mu.RLock()
+	entry, ok := tokenCache.items[sessionID]
+	tokenCache.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+
+	if time.Now().After(entry.expiresAt) {
+		tokenCache.mu.Lock()
+		delete(tokenCache.items, sessionID)
+		tokenCache.mu.Unlock()
+		return "", false
+	}
+
+	return entry.token, true
+}
+
+func setCachedToken(sessionID, token string) {
+	if sessionID == "" || token == "" {
+		return
+	}
+
+	expiresAt := tokenExpiry(token)
+	if expiresAt.IsZero() {
+		expiresAt = time.Now().Add(defaultTokenTTL)
+	}
+
+	tokenCache.mu.Lock()
+	tokenCache.items[sessionID] = cachedToken{
+		token:     token,
+		expiresAt: expiresAt,
+	}
+	tokenCache.mu.Unlock()
+}
+
+func tokenExpiry(token string) time.Time {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return time.Time{}
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return time.Time{}
+	}
+
+	expValue, ok := claims["exp"]
+	if !ok {
+		return time.Time{}
+	}
+
+	var exp int64
+	switch v := expValue.(type) {
+	case float64:
+		exp = int64(v)
+	case json.Number:
+		exp, _ = v.Int64()
+	}
+
+	if exp == 0 {
+		return time.Time{}
+	}
+
+	return time.Unix(exp, 0).Add(-tokenExpirySkew)
 }

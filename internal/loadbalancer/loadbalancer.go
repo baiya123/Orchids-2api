@@ -4,18 +4,25 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
+	"time"
 
 	"orchids-api/internal/store"
 )
 
+const defaultCacheTTL = 5 * time.Second
+
 type LoadBalancer struct {
-	store *store.Store
-	mu    sync.RWMutex
+	store          *store.Store
+	mu             sync.RWMutex
+	cachedAccounts []*store.Account
+	cacheExpires   time.Time
+	cacheTTL       time.Duration
 }
 
 func New(s *store.Store) *LoadBalancer {
 	return &LoadBalancer{
-		store: s,
+		store:    s,
+		cacheTTL: defaultCacheTTL,
 	}
 }
 
@@ -24,10 +31,7 @@ func (lb *LoadBalancer) GetNextAccount() (*store.Account, error) {
 }
 
 func (lb *LoadBalancer) GetNextAccountExcluding(excludeIDs []int64) (*store.Account, error) {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-
-	accounts, err := lb.store.GetEnabledAccounts()
+	accounts, err := lb.getEnabledAccounts()
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +61,33 @@ func (lb *LoadBalancer) GetNextAccountExcluding(excludeIDs []int64) (*store.Acco
 	}
 
 	return account, nil
+}
+
+func (lb *LoadBalancer) getEnabledAccounts() ([]*store.Account, error) {
+	now := time.Now()
+
+	lb.mu.RLock()
+	if len(lb.cachedAccounts) > 0 && now.Before(lb.cacheExpires) {
+		accounts := make([]*store.Account, len(lb.cachedAccounts))
+		copy(accounts, lb.cachedAccounts)
+		lb.mu.RUnlock()
+		return accounts, nil
+	}
+	lb.mu.RUnlock()
+
+	accounts, err := lb.store.GetEnabledAccounts()
+	if err != nil {
+		return nil, err
+	}
+
+	lb.mu.Lock()
+	lb.cachedAccounts = accounts
+	lb.cacheExpires = now.Add(lb.cacheTTL)
+	lb.mu.Unlock()
+
+	cached := make([]*store.Account, len(accounts))
+	copy(cached, accounts)
+	return cached, nil
 }
 
 func (lb *LoadBalancer) selectAccount(accounts []*store.Account) *store.Account {

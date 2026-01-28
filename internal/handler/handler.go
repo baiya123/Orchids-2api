@@ -32,11 +32,11 @@ type UpstreamClient interface {
 }
 
 type ClaudeRequest struct {
-	Model    string              `json:"model"`
-	Messages []prompt.Message    `json:"messages"`
-	System   []prompt.SystemItem `json:"system"`
-	Tools    []interface{}       `json:"tools"`
-	Stream   bool                `json:"stream"`
+	Model    string           `json:"model"`
+	Messages []prompt.Message `json:"messages"`
+	System   SystemItems      `json:"system"`
+	Tools    []interface{}    `json:"tools"`
+	Stream   bool             `json:"stream"`
 }
 
 func New(cfg *config.Config) *Handler {
@@ -224,6 +224,7 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	var responseText strings.Builder
 	var contentBlocks []map[string]interface{}
 	var currentTextIndex = -1
+	textBlockBuilders := map[int]*strings.Builder{}
 
 	// Token 计数
 	inputTokens := tiktoken.EstimateTextTokens(builtPrompt)
@@ -257,6 +258,19 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		logger.LogOutputSSE(event, data)
 	}
 
+	writeFinalSSE := func(event, data string) {
+		if !isStream {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		flusher.Flush()
+
+		// 5. 记录输出给客户端的 SSE
+		logger.LogOutputSSE(event, data)
+	}
+
 	finishResponse := func(stopReason string) {
 		mu.Lock()
 		if hasReturn {
@@ -273,10 +287,10 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 				"delta": map[string]string{"stop_reason": stopReason},
 				"usage": map[string]int{"output_tokens": outputTokens},
 			})
-			writeSSE("message_delta", string(deltaData))
+			writeFinalSSE("message_delta", string(deltaData))
 
 			stopData, _ := json.Marshal(map[string]string{"type": "message_stop"})
-			writeSSE("message_stop", string(stopData))
+			writeFinalSSE("message_stop", string(stopData))
 		}
 
 		// 6. 记录摘要
@@ -366,9 +380,9 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 					if !isStream {
 						contentBlocks = append(contentBlocks, map[string]interface{}{
 							"type": "text",
-							"text": "",
 						})
 						currentTextIndex = len(contentBlocks) - 1
+						textBlockBuilders[currentTextIndex] = &strings.Builder{}
 					}
 					data, _ := json.Marshal(map[string]interface{}{
 						"type":          "content_block_start",
@@ -386,9 +400,12 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 					if !isStream {
 						responseText.WriteString(delta)
 						if currentTextIndex >= 0 && currentTextIndex < len(contentBlocks) {
-							if text, ok := contentBlocks[currentTextIndex]["text"].(string); ok {
-								contentBlocks[currentTextIndex]["text"] = text + delta
+							builder, ok := textBlockBuilders[currentTextIndex]
+							if !ok {
+								builder = &strings.Builder{}
+								textBlockBuilders[currentTextIndex] = builder
 							}
+							builder.WriteString(delta)
 						}
 					}
 					data, _ := json.Marshal(map[string]interface{}{
@@ -535,6 +552,16 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		stopReason := finalStopReason
 		if stopReason == "" {
 			stopReason = "end_turn"
+		}
+
+		for i := range contentBlocks {
+			if blockType, ok := contentBlocks[i]["type"].(string); ok && blockType == "text" {
+				if builder, ok := textBlockBuilders[i]; ok {
+					contentBlocks[i]["text"] = builder.String()
+				} else if _, ok := contentBlocks[i]["text"]; !ok {
+					contentBlocks[i]["text"] = ""
+				}
+			}
 		}
 
 		if len(contentBlocks) == 0 && responseText.Len() > 0 {
