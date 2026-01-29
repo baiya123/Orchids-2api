@@ -2,6 +2,7 @@ package summarycache
 
 import (
 	"container/list"
+	"context"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -105,13 +106,13 @@ func (c *ShardedMemoryCache) getShard(key string) *memoryShard {
 }
 
 // Get 从缓存获取值
-func (c *ShardedMemoryCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
+func (c *ShardedMemoryCache) Get(ctx context.Context, key string) (prompt.SummaryCacheEntry, bool) {
 	shard := c.getShard(key)
 	return shard.get(key)
 }
 
 // Put 向缓存写入值
-func (c *ShardedMemoryCache) Put(key string, entry prompt.SummaryCacheEntry) {
+func (c *ShardedMemoryCache) Put(ctx context.Context, key string, entry prompt.SummaryCacheEntry) {
 	shard := c.getShard(key)
 	shard.put(key, entry)
 }

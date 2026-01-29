@@ -1,6 +1,9 @@
 package summarycache
 
-import "orchids-api/internal/prompt"
+import (
+	"context"
+	"orchids-api/internal/prompt"
+)
 
 type InstrumentedCache struct {
 	cache prompt.SummaryCache
@@ -17,11 +20,11 @@ func NewInstrumentedCache(cache prompt.SummaryCache, stats *Stats) *Instrumented
 	}
 }
 
-func (c *InstrumentedCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
+func (c *InstrumentedCache) Get(ctx context.Context, key string) (prompt.SummaryCacheEntry, bool) {
 	if c == nil || c.cache == nil {
 		return prompt.SummaryCacheEntry{}, false
 	}
-	entry, ok := c.cache.Get(key)
+	entry, ok := c.cache.Get(ctx, key)
 	if ok {
 		if c.stats != nil {
 			c.stats.Hit()
@@ -34,9 +37,9 @@ func (c *InstrumentedCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
 	return prompt.SummaryCacheEntry{}, false
 }
 
-func (c *InstrumentedCache) Put(key string, entry prompt.SummaryCacheEntry) {
+func (c *InstrumentedCache) Put(ctx context.Context, key string, entry prompt.SummaryCacheEntry) {
 	if c == nil || c.cache == nil {
 		return
 	}
-	c.cache.Put(key, entry)
+	c.cache.Put(ctx, key, entry)
 }

@@ -54,6 +54,34 @@ func NewToolMapper() *ToolMapper {
 	tm.addMapping("write_file", "Write")
 	tm.addMapping("CreateFile", "Write")
 	tm.addMapping("create_file", "Write")
+	tm.addMapping("save-file", "Write")
+
+	// 计划与任务工具
+	tm.addMapping("update_todo_list", "TodoWrite")
+	tm.addMapping("todo", "TodoWrite")
+	tm.addMapping("todo_write", "TodoWrite")
+	tm.addMapping("todowrite", "TodoWrite")
+	tm.addMapping("ask_followup_question", "AskUserQuestion")
+	tm.addMapping("ask", "AskUserQuestion")
+	tm.addMapping("enter_plan_mode", "EnterPlanMode")
+	tm.addMapping("exit_plan_mode", "ExitPlanMode")
+	tm.addMapping("new_task", "Task")
+	tm.addMapping("task_output", "TaskOutput")
+	tm.addMapping("task_stop", "TaskStop")
+	tm.addMapping("use_skill", "Skill")
+	tm.addMapping("skill", "Skill")
+
+	// Web 工具
+	tm.addMapping("web_fetch", "WebFetch")
+	tm.addMapping("webfetch", "WebFetch")
+	tm.addMapping("fetch", "WebFetch")
+	tm.addMapping("search", "WebSearch")
+
+	// MCP 工具
+	tm.addMapping("query-docs", "mcp__context7__query-docs")
+	tm.addMapping("resolve-library-id", "mcp__context7__resolve-library-id")
+	tm.addMapping("mcp__context7__query-docs", "mcp__context7__query-docs")
+	tm.addMapping("mcp__context7__resolve-library-id", "mcp__context7__resolve-library-id")
 
 	// Orchids 事件 → Claude Code 工具名映射
 	tm.fromOrchids["edit_file"] = "Edit"

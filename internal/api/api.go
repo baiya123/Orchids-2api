@@ -3,11 +3,10 @@ package api
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -86,7 +85,7 @@ func (a *API) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.GenerateSessionToken()
 	if err != nil {
-		log.Printf("[ERROR] Failed to generate session token: %v", err)
+		slog.Error("Failed to generate session token", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -170,7 +169,7 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		accounts, err := a.store.ListAccounts()
+		accounts, err := a.store.ListAccounts(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -187,7 +186,7 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 		if acc.ClientCookie != "" && acc.SessionID == "" {
 			info, err := clerk.FetchAccountInfo(acc.ClientCookie)
 			if err != nil {
-				log.Printf("Failed to fetch account info: %v", err)
+				slog.Error("Failed to fetch account info", "error", err)
 				http.Error(w, "Failed to fetch account info: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -198,8 +197,8 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 			acc.Email = info.Email
 		}
 
-		if err := a.store.CreateAccount(&acc); err != nil {
-			log.Printf("Failed to create account: %v", err)
+		if err := a.store.CreateAccount(r.Context(), &acc); err != nil {
+			slog.Error("Failed to create account", "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -228,7 +227,7 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if isRefresh {
-			acc, err := a.store.GetAccount(id)
+			acc, err := a.store.GetAccount(r.Context(), id)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
@@ -245,14 +244,14 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 			acc.Email = info.Email
 			acc.Token = info.JWT // Update Token/JWT
 
-			if err := a.store.UpdateAccount(acc); err != nil {
+			if err := a.store.UpdateAccount(r.Context(), acc); err != nil {
 				http.Error(w, "Failed to save refreshed account: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 			json.NewEncoder(w).Encode(acc)
 			return
 		}
-		acc, err := a.store.GetAccount(id)
+		acc, err := a.store.GetAccount(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -260,7 +259,7 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(acc)
 
 	case http.MethodPut:
-		existing, err := a.store.GetAccount(id)
+		existing, err := a.store.GetAccount(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -289,14 +288,14 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 			acc.Email = existing.Email
 		}
 
-		if err := a.store.UpdateAccount(&acc); err != nil {
+		if err := a.store.UpdateAccount(r.Context(), &acc); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(acc)
 
 	case http.MethodDelete:
-		if err := a.store.DeleteAccount(id); err != nil {
+		if err := a.store.DeleteAccount(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -313,7 +312,7 @@ func (a *API) HandleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accounts, err := a.store.ListAccounts()
+	accounts, err := a.store.ListAccounts(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -352,8 +351,8 @@ func (a *API) HandleImport(w http.ResponseWriter, r *http.Request) {
 	for _, acc := range exportData.Accounts {
 		acc.ID = 0
 		acc.RequestCount = 0
-		if err := a.store.CreateAccount(&acc); err != nil {
-			log.Printf("Failed to import account %s: %v", acc.Name, err)
+		if err := a.store.CreateAccount(r.Context(), &acc); err != nil {
+			slog.Warn("Failed to import account", "name", acc.Name, "error", err)
 			result.Skipped++
 		} else {
 			result.Imported++
@@ -383,7 +382,7 @@ func (a *API) HandleKeys(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		keys, err := a.store.ListApiKeys()
+		keys, err := a.store.ListApiKeys(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -406,7 +405,7 @@ func (a *API) HandleKeys(w http.ResponseWriter, r *http.Request) {
 
 		fullKey, err := generateApiKey()
 		if err != nil {
-			log.Printf("Failed to generate api key: %v", err)
+			slog.Error("Failed to generate api key", "error", err)
 			http.Error(w, "failed to generate api key", http.StatusInternalServerError)
 			return
 		}
@@ -421,7 +420,7 @@ func (a *API) HandleKeys(w http.ResponseWriter, r *http.Request) {
 			KeySuffix: fullKey[len(fullKey)-4:],
 			Enabled:   true,
 		}
-		if err := a.store.CreateApiKey(&key); err != nil {
+		if err := a.store.CreateApiKey(r.Context(), &key); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -464,8 +463,8 @@ func (a *API) HandleKeyByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := a.store.UpdateApiKeyEnabled(id, *req.Enabled); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+		if err := a.store.UpdateApiKeyEnabled(r.Context(), id, *req.Enabled); err != nil {
+			if errors.Is(err, store.ErrNoRows) {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
@@ -473,7 +472,7 @@ func (a *API) HandleKeyByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		key, err := a.store.GetApiKeyByID(id)
+		key, err := a.store.GetApiKeyByID(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -485,8 +484,8 @@ func (a *API) HandleKeyByID(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(key)
 
 	case http.MethodDelete:
-		if err := a.store.DeleteApiKey(id); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+		if err := a.store.DeleteApiKey(r.Context(), id); err != nil {
+			if errors.Is(err, store.ErrNoRows) {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
@@ -505,7 +504,7 @@ func (a *API) HandleModels(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		models, err := a.store.ListModels()
+		models, err := a.store.ListModels(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -519,7 +518,7 @@ func (a *API) HandleModels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := a.store.CreateModel(&m); err != nil {
+		if err := a.store.CreateModel(r.Context(), &m); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -543,9 +542,9 @@ func (a *API) HandleModelByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		m, err := a.store.GetModel(id)
+		m, err := a.store.GetModel(r.Context(), id)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) || err.Error() == "redis: nil" {
+			if errors.Is(err, store.ErrNoRows) || err.Error() == "redis: nil" {
 				http.Error(w, "Model not found", http.StatusNotFound)
 				return
 			}
@@ -562,14 +561,14 @@ func (a *API) HandleModelByID(w http.ResponseWriter, r *http.Request) {
 		}
 		m.ID = id
 
-		if err := a.store.UpdateModel(&m); err != nil {
+		if err := a.store.UpdateModel(r.Context(), &m); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(m)
 
 	case http.MethodDelete:
-		if err := a.store.DeleteModel(id); err != nil {
+		if err := a.store.DeleteModel(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

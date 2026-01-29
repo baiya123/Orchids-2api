@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -71,12 +70,11 @@ func (s *redisStore) Close() error {
 	return s.client.Close()
 }
 
-func (s *redisStore) CreateAccount(acc *Account) error {
+func (s *redisStore) CreateAccount(ctx context.Context, acc *Account) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
 
-	ctx := context.Background()
 	id, err := s.client.Incr(ctx, s.accountsNextIDKey()).Result()
 	if err != nil {
 		return err
@@ -108,7 +106,7 @@ func (s *redisStore) CreateAccount(acc *Account) error {
 	return err
 }
 
-func (s *redisStore) UpdateAccount(acc *Account) error {
+func (s *redisStore) UpdateAccount(ctx context.Context, acc *Account) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
@@ -116,9 +114,8 @@ func (s *redisStore) UpdateAccount(acc *Account) error {
 		return nil
 	}
 
-	ctx := context.Background()
 	existing, err := s.getAccount(ctx, acc.ID)
-	if err == sql.ErrNoRows {
+	if err == ErrNoRows {
 		return nil
 	}
 	if err != nil {
@@ -160,7 +157,7 @@ func (s *redisStore) UpdateAccount(acc *Account) error {
 	return err
 }
 
-func (s *redisStore) DeleteAccount(id int64) error {
+func (s *redisStore) DeleteAccount(ctx context.Context, id int64) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
@@ -168,7 +165,6 @@ func (s *redisStore) DeleteAccount(id int64) error {
 		return nil
 	}
 
-	ctx := context.Background()
 	pipe := s.client.Pipeline()
 	pipe.Del(ctx, s.accountsKey(id))
 	pipe.SRem(ctx, s.accountsIDsKey(), id)
@@ -177,19 +173,17 @@ func (s *redisStore) DeleteAccount(id int64) error {
 	return err
 }
 
-func (s *redisStore) GetAccount(id int64) (*Account, error) {
+func (s *redisStore) GetAccount(ctx context.Context, id int64) (*Account, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	return s.getAccount(ctx, id)
 }
 
-func (s *redisStore) ListAccounts() ([]*Account, error) {
+func (s *redisStore) ListAccounts(ctx context.Context) ([]*Account, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	ids, err := s.client.SMembers(ctx, s.accountsIDsKey()).Result()
 	if err != nil {
 		return nil, err
@@ -197,11 +191,10 @@ func (s *redisStore) ListAccounts() ([]*Account, error) {
 	return s.getAccountsByIDs(ctx, ids, false)
 }
 
-func (s *redisStore) GetEnabledAccounts() ([]*Account, error) {
+func (s *redisStore) GetEnabledAccounts(ctx context.Context) ([]*Account, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	ids, err := s.client.SMembers(ctx, s.accountsEnabledKey()).Result()
 	if err != nil {
 		return nil, err
@@ -209,7 +202,7 @@ func (s *redisStore) GetEnabledAccounts() ([]*Account, error) {
 	return s.getAccountsByIDs(ctx, ids, true)
 }
 
-func (s *redisStore) IncrementRequestCount(id int64) error {
+func (s *redisStore) IncrementRequestCount(ctx context.Context, id int64) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
@@ -217,9 +210,8 @@ func (s *redisStore) IncrementRequestCount(id int64) error {
 		return nil
 	}
 
-	ctx := context.Background()
 	acc, err := s.getAccount(ctx, id)
-	if err == sql.ErrNoRows {
+	if err == ErrNoRows {
 		return nil
 	}
 	if err != nil {
@@ -241,11 +233,11 @@ func (s *redisStore) IncrementRequestCount(id int64) error {
 
 func (s *redisStore) getAccount(ctx context.Context, id int64) (*Account, error) {
 	if id == 0 {
-		return nil, sql.ErrNoRows
+		return nil, ErrNoRows
 	}
 	value, err := s.client.Get(ctx, s.accountsKey(id)).Result()
 	if err == redis.Nil {
-		return nil, sql.ErrNoRows
+		return nil, ErrNoRows
 	}
 	if err != nil {
 		return nil, err
@@ -361,7 +353,7 @@ func (s *redisStore) getAccountsByIDs(ctx context.Context, ids []string, onlyEna
 	return accounts, nil
 }
 
-func (s *redisStore) GetSetting(key string) (string, error) {
+func (s *redisStore) GetSetting(ctx context.Context, key string) (string, error) {
 	if s == nil || s.client == nil {
 		return "", fmt.Errorf("redis store not configured")
 	}
@@ -369,7 +361,6 @@ func (s *redisStore) GetSetting(key string) (string, error) {
 	if key == "" {
 		return "", nil
 	}
-	ctx := context.Background()
 	value, err := s.client.Get(ctx, s.settingsKey(key)).Result()
 	if err == redis.Nil {
 		return "", nil
@@ -380,7 +371,7 @@ func (s *redisStore) GetSetting(key string) (string, error) {
 	return value, nil
 }
 
-func (s *redisStore) SetSetting(key, value string) error {
+func (s *redisStore) SetSetting(ctx context.Context, key, value string) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
@@ -388,16 +379,14 @@ func (s *redisStore) SetSetting(key, value string) error {
 	if key == "" {
 		return nil
 	}
-	ctx := context.Background()
 	return s.client.Set(ctx, s.settingsKey(key), value, 0).Err()
 }
 
-func (s *redisStore) CreateApiKey(key *ApiKey) error {
+func (s *redisStore) CreateApiKey(ctx context.Context, key *ApiKey) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
 
-	ctx := context.Background()
 	id, err := s.client.Incr(ctx, s.apiKeysNextIDKey()).Result()
 	if err != nil {
 		return err
@@ -425,11 +414,10 @@ func (s *redisStore) CreateApiKey(key *ApiKey) error {
 	return err
 }
 
-func (s *redisStore) ListApiKeys() ([]*ApiKey, error) {
+func (s *redisStore) ListApiKeys(ctx context.Context) ([]*ApiKey, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	ids, err := s.client.SMembers(ctx, s.apiKeysIDsKey()).Result()
 	if err != nil {
 		return nil, err
@@ -437,7 +425,7 @@ func (s *redisStore) ListApiKeys() ([]*ApiKey, error) {
 	return s.getApiKeysByIDs(ctx, ids)
 }
 
-func (s *redisStore) GetApiKeyByHash(hash string) (*ApiKey, error) {
+func (s *redisStore) GetApiKeyByHash(ctx context.Context, hash string) (*ApiKey, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
@@ -445,7 +433,6 @@ func (s *redisStore) GetApiKeyByHash(hash string) (*ApiKey, error) {
 	if hash == "" {
 		return nil, nil
 	}
-	ctx := context.Background()
 	idStr, err := s.client.Get(ctx, s.apiKeysHashKey(hash)).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -460,17 +447,16 @@ func (s *redisStore) GetApiKeyByHash(hash string) (*ApiKey, error) {
 	return s.getApiKeyByID(ctx, id)
 }
 
-func (s *redisStore) UpdateApiKeyEnabled(id int64, enabled bool) error {
+func (s *redisStore) UpdateApiKeyEnabled(ctx context.Context, id int64, enabled bool) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
 	if id == 0 {
-		return sql.ErrNoRows
+		return ErrNoRows
 	}
-	ctx := context.Background()
 	key, err := s.getApiKeyByID(ctx, id)
-	if err == sql.ErrNoRows {
-		return sql.ErrNoRows
+	if err == ErrNoRows {
+		return ErrNoRows
 	}
 	if err != nil {
 		return err
@@ -487,16 +473,15 @@ func (s *redisStore) UpdateApiKeyEnabled(id int64, enabled bool) error {
 	return nil
 }
 
-func (s *redisStore) UpdateApiKeyLastUsed(id int64) error {
+func (s *redisStore) UpdateApiKeyLastUsed(ctx context.Context, id int64) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
 	if id == 0 {
 		return nil
 	}
-	ctx := context.Background()
 	key, err := s.getApiKeyByID(ctx, id)
-	if err == sql.ErrNoRows {
+	if err == ErrNoRows {
 		return nil
 	}
 	if err != nil {
@@ -512,17 +497,16 @@ func (s *redisStore) UpdateApiKeyLastUsed(id int64) error {
 	return s.client.Set(ctx, s.apiKeysKey(id), data, 0).Err()
 }
 
-func (s *redisStore) DeleteApiKey(id int64) error {
+func (s *redisStore) DeleteApiKey(ctx context.Context, id int64) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
 	if id == 0 {
-		return sql.ErrNoRows
+		return ErrNoRows
 	}
-	ctx := context.Background()
 	key, err := s.getApiKeyByID(ctx, id)
-	if err == sql.ErrNoRows {
-		return sql.ErrNoRows
+	if err == ErrNoRows {
+		return ErrNoRows
 	}
 	if err != nil {
 		return err
@@ -538,21 +522,20 @@ func (s *redisStore) DeleteApiKey(id int64) error {
 	return err
 }
 
-func (s *redisStore) GetApiKeyByID(id int64) (*ApiKey, error) {
+func (s *redisStore) GetApiKeyByID(ctx context.Context, id int64) (*ApiKey, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	return s.getApiKeyByID(ctx, id)
 }
 
 func (s *redisStore) getApiKeyByID(ctx context.Context, id int64) (*ApiKey, error) {
 	if id == 0 {
-		return nil, sql.ErrNoRows
+		return nil, ErrNoRows
 	}
 	value, err := s.client.Get(ctx, s.apiKeysKey(id)).Result()
 	if err == redis.Nil {
-		return nil, sql.ErrNoRows
+		return nil, ErrNoRows
 	}
 	if err != nil {
 		return nil, err
@@ -729,12 +712,11 @@ func (r apiKeyRecord) toApiKey() *ApiKey {
 
 // Model wrappers
 
-func (s *redisStore) CreateModel(m *model.Model) error {
+func (s *redisStore) CreateModel(ctx context.Context, m *model.Model) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
 
-	ctx := context.Background()
 	// Use a counter for ID generation to match screenshot style (numeric)
 	id, err := s.client.Incr(ctx, s.modelsNextIDKey()).Result()
 	if err != nil {
@@ -754,7 +736,7 @@ func (s *redisStore) CreateModel(m *model.Model) error {
 	return err
 }
 
-func (s *redisStore) UpdateModel(m *model.Model) error {
+func (s *redisStore) UpdateModel(ctx context.Context, m *model.Model) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
@@ -762,7 +744,6 @@ func (s *redisStore) UpdateModel(m *model.Model) error {
 		return fmt.Errorf("model id is required")
 	}
 
-	ctx := context.Background()
 	data, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -775,7 +756,7 @@ func (s *redisStore) UpdateModel(m *model.Model) error {
 	return err
 }
 
-func (s *redisStore) DeleteModel(id string) error {
+func (s *redisStore) DeleteModel(ctx context.Context, id string) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("redis store not configured")
 	}
@@ -783,7 +764,6 @@ func (s *redisStore) DeleteModel(id string) error {
 		return nil
 	}
 
-	ctx := context.Background()
 	pipe := s.client.Pipeline()
 	pipe.Del(ctx, s.modelsKey(id))
 	pipe.SRem(ctx, s.modelsIDsKey(), id)
@@ -791,14 +771,13 @@ func (s *redisStore) DeleteModel(id string) error {
 	return err
 }
 
-func (s *redisStore) GetModel(id string) (*model.Model, error) {
+func (s *redisStore) GetModel(ctx context.Context, id string) (*model.Model, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	value, err := s.client.Get(ctx, s.modelsKey(id)).Result()
 	if err == redis.Nil {
-		return nil, sql.ErrNoRows // reuse sql.ErrNoRows for consistency
+		return nil, ErrNoRows // reuse ErrNoRows for consistency
 	}
 	if err != nil {
 		return nil, err
@@ -811,11 +790,10 @@ func (s *redisStore) GetModel(id string) (*model.Model, error) {
 	return &m, nil
 }
 
-func (s *redisStore) ListModels() ([]*model.Model, error) {
+func (s *redisStore) ListModels(ctx context.Context) ([]*model.Model, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis store not configured")
 	}
-	ctx := context.Background()
 	ids, err := s.client.SMembers(ctx, s.modelsIDsKey()).Result()
 	if err != nil {
 		return nil, err

@@ -13,7 +13,7 @@
 | `admin_user` | admin | 管理员用户名 |
 | `admin_pass` | admin123 | 管理员密码 |
 | `admin_path` | /admin | 管理界面路径 |
-| `store_mode` | redis | 存储模式（redis 或 sqlite） |
+| `store_mode` | redis | 存储模式（仅支持 redis） |
 | `redis_addr` |  | Redis 地址（如 127.0.0.1:6379） |
 | `redis_password` |  | Redis 密码 |
 | `redis_db` | 0 | Redis DB |

@@ -2,6 +2,7 @@ package summarycache
 
 import (
 	"container/list"
+	"context"
 	"sync"
 	"time"
 
@@ -34,7 +35,7 @@ func NewMemoryCache(maxEntries int, ttl time.Duration) *MemoryCache {
 	}
 }
 
-func (c *MemoryCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
+func (c *MemoryCache) Get(ctx context.Context, key string) (prompt.SummaryCacheEntry, bool) {
 	if c == nil || c.maxEntries <= 0 {
 		return prompt.SummaryCacheEntry{}, false
 	}
@@ -64,7 +65,7 @@ func (c *MemoryCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
 	return value, true
 }
 
-func (c *MemoryCache) Put(key string, entry prompt.SummaryCacheEntry) {
+func (c *MemoryCache) Put(ctx context.Context, key string, entry prompt.SummaryCacheEntry) {
 	if c == nil || c.maxEntries <= 0 {
 		return
 	}

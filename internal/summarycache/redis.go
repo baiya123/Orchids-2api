@@ -39,12 +39,10 @@ func NewRedisCache(addr, password string, db int, ttl time.Duration, prefix stri
 	}
 }
 
-func (c *RedisCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
+func (c *RedisCache) Get(ctx context.Context, key string) (prompt.SummaryCacheEntry, bool) {
 	if c == nil || c.client == nil {
 		return prompt.SummaryCacheEntry{}, false
 	}
-
-	ctx := context.Background()
 	value, err := c.client.Get(ctx, c.prefix+key).Result()
 	if err == redis.Nil || err != nil {
 		return prompt.SummaryCacheEntry{}, false
@@ -57,7 +55,7 @@ func (c *RedisCache) Get(key string) (prompt.SummaryCacheEntry, bool) {
 	return entry, true
 }
 
-func (c *RedisCache) Put(key string, entry prompt.SummaryCacheEntry) {
+func (c *RedisCache) Put(ctx context.Context, key string, entry prompt.SummaryCacheEntry) {
 	if c == nil || c.client == nil {
 		return
 	}
@@ -65,8 +63,6 @@ func (c *RedisCache) Put(key string, entry prompt.SummaryCacheEntry) {
 	if err != nil {
 		return
 	}
-
-	ctx := context.Background()
 	if c.ttl > 0 {
 		_ = c.client.Set(ctx, c.prefix+key, data, c.ttl).Err()
 		return

@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -117,6 +118,7 @@ type ClaudeAPIRequest struct {
 }
 
 type PromptOptions struct {
+	Context          context.Context
 	MaxTokens        int
 	SummaryMaxTokens int
 	KeepTurns        int
@@ -133,8 +135,8 @@ type SummaryCacheEntry struct {
 }
 
 type SummaryCache interface {
-	Get(key string) (SummaryCacheEntry, bool)
-	Put(key string, entry SummaryCacheEntry)
+	Get(ctx context.Context, key string) (SummaryCacheEntry, bool)
+	Put(ctx context.Context, key string, entry SummaryCacheEntry)
 }
 
 // 系统预设提示词
@@ -555,7 +557,7 @@ func BuildPromptV2WithOptions(req ClaudeAPIRequest, opts PromptOptions) string {
 
 		summary := ""
 		if summaryBudget > 0 {
-			summary = summarizeMessagesWithCache(opts, older, summaryBudget)
+			summary = summarizeMessagesWithCache(opts.Context, opts, older, summaryBudget)
 		}
 		history := FormatMessagesAsMarkdown(recent)
 		sections = buildSections(summary, history)
@@ -599,7 +601,7 @@ func summaryBudgetFor(maxTokens int, baseSections []string, recent []Message, cu
 	return budget
 }
 
-func summarizeMessagesWithCache(opts PromptOptions, messages []Message, maxTokens int) string {
+func summarizeMessagesWithCache(ctx context.Context, opts PromptOptions, messages []Message, maxTokens int) string {
 	if maxTokens <= 0 {
 		return ""
 	}
@@ -612,7 +614,7 @@ func summarizeMessagesWithCache(opts PromptOptions, messages []Message, maxToken
 		return summarizeMessages(messages, maxTokens)
 	}
 
-	entry, ok := cache.Get(key)
+	entry, ok := cache.Get(ctx, key)
 	if len(messages) == 0 {
 		if ok && entry.Summary != "" {
 			return trimSummaryToBudget(entry.Summary, maxTokens)
@@ -627,7 +629,7 @@ func summarizeMessagesWithCache(opts PromptOptions, messages []Message, maxToken
 				if entry.Budget != maxTokens {
 					entry.Budget = maxTokens
 					entry.UpdatedAt = time.Now()
-					cache.Put(key, entry)
+					cache.Put(ctx, key, entry)
 				}
 				return entry.Summary
 			}
@@ -643,7 +645,7 @@ func summarizeMessagesWithCache(opts PromptOptions, messages []Message, maxToken
 				summary = summarizeMessages(messages, maxTokens)
 				lines = splitSummaryLines(summary)
 			}
-			cache.Put(key, SummaryCacheEntry{
+			cache.Put(ctx, key, SummaryCacheEntry{
 				Summary:   summary,
 				Lines:     lines,
 				Hashes:    hashes,
@@ -655,7 +657,7 @@ func summarizeMessagesWithCache(opts PromptOptions, messages []Message, maxToken
 	}
 
 	summary := summarizeMessages(messages, maxTokens)
-	cache.Put(key, SummaryCacheEntry{
+	cache.Put(ctx, key, SummaryCacheEntry{
 		Summary:   summary,
 		Lines:     splitSummaryLines(summary),
 		Hashes:    hashes,

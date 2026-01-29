@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -24,34 +24,31 @@ import (
 	"orchids-api/internal/store"
 	"orchids-api/internal/summarycache"
 	"orchids-api/web"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
+	// 初始化结构化日志
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	configPath := flag.String("config", "", "Path to config.json/config.yaml")
 	flag.Parse()
 
 	cfg, resolvedCfgPath, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		slog.Error("Failed to load config", "error", err)
+		os.Exit(1)
 	}
 
 	// 启动时清理所有调试日志
 	if cfg.DebugEnabled {
 		debug.CleanupAllLogs()
-		log.Println("已清理调试日志目录")
+		slog.Info("已清理调试日志目录")
 	}
 
-	storeMode := strings.ToLower(strings.TrimSpace(cfg.StoreMode))
-	dbPath := ""
-	if storeMode != "redis" {
-		dataDir := filepath.Join(".", "data")
-		if err := os.MkdirAll(dataDir, 0755); err != nil {
-			log.Fatalf("Failed to create data dir: %v", err)
-		}
-		dbPath = filepath.Join(dataDir, "orchids.db")
-	}
-
-	s, err := store.New(dbPath, store.Options{
+	s, err := store.New(store.Options{
 		StoreMode:     cfg.StoreMode,
 		RedisAddr:     cfg.RedisAddr,
 		RedisPassword: cfg.RedisPassword,
@@ -59,15 +56,12 @@ func main() {
 		RedisPrefix:   cfg.RedisPrefix,
 	})
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		slog.Error("Failed to initialize database", "error", err)
+		os.Exit(1)
 	}
 	defer s.Close()
 
-	if storeMode == "redis" {
-		log.Printf("Store mode: redis (addr=%s, prefix=%s)", cfg.RedisAddr, cfg.RedisPrefix)
-	} else {
-		log.Printf("Store mode: sqlite (db=%s)", dbPath)
-	}
+	slog.Info("Store initialized", "mode", "redis", "addr", cfg.RedisAddr, "prefix", cfg.RedisPrefix)
 
 	lb := loadbalancer.NewWithCacheTTL(s, time.Duration(cfg.LoadBalancerCacheTTL)*time.Second)
 	apiHandler := api.New(s, cfg.AdminUser, cfg.AdminPass, cfg, resolvedCfgPath)
@@ -98,7 +92,7 @@ func main() {
 			h.SetSummaryCache(summarycache.NewInstrumentedCache(baseCache, stats))
 		}
 	}
-	log.Printf("Summary cache mode: %s", cacheMode)
+	slog.Info("Summary cache mode", "mode", cacheMode)
 
 	mux := http.NewServeMux()
 
@@ -150,9 +144,13 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
+	slog.Info("Prometheus metrics enabled", "path", "/metrics")
+
 	if cfg.DebugEnabled {
 		mux.HandleFunc("/debug/pprof/", middleware.SessionAuth(cfg.AdminPass, cfg.AdminToken, http.DefaultServeMux.ServeHTTP))
-		log.Println("pprof 性能监控已启用: /debug/pprof/")
+		slog.Info("pprof enabled", "path", "/debug/pprof/")
 	}
 
 	server := &http.Server{
@@ -177,25 +175,26 @@ func main() {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-quit
-		log.Printf("收到信号 %v，开始优雅关闭...", sig)
+		slog.Info("Received signal, starting graceful shutdown", "signal", sig)
 
 		// 给现有请求 30 秒完成
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("服务器关闭错误: %v", err)
+			slog.Error("Server shutdown error", "error", err)
 		}
 		close(idleConnsClosed)
 	}()
 
-	log.Printf("Server running on port %s", cfg.Port)
-	log.Printf("Admin UI: http://localhost:%s%s", cfg.Port, cfg.AdminPath)
+	slog.Info("Server running", "port", cfg.Port)
+	slog.Info("Admin UI available", "url", fmt.Sprintf("http://localhost:%s%s", cfg.Port, cfg.AdminPath))
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("服务器启动失败: %v", err)
+		slog.Error("Server start failed", "error", err)
+		os.Exit(1)
 	}
 
 	<-idleConnsClosed
-	log.Println("服务器已安全关闭")
+	slog.Info("Server shutdown gracefully")
 }

@@ -265,31 +265,39 @@ func (c *Client) sendRequestSSE(ctx context.Context, req UpstreamRequest, onMess
 	}
 
 	url := c.upstreamURL()
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		return err
-	}
 
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Orchids-Api-Version", "2")
+	// 使用 Circuit Breaker 保护上游调用
+	breaker := GetAccountBreaker(c.config.Email)
 
-	// 记录上游请求
-	if logger != nil {
-		headers := map[string]string{
-			"Accept":                "text/event-stream",
-			"Authorization":         "Bearer [REDACTED]",
-			"Content-Type":          "application/json",
-			"X-Orchids-Api-Version": "2",
+	result, err := breaker.Execute(func() (interface{}, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			return nil, err
 		}
-		logger.LogUpstreamRequest(url, headers, payload)
-	}
 
-	resp, err := c.httpClient.Do(httpReq)
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("X-Orchids-Api-Version", "2")
+
+		// 记录上游请求
+		if logger != nil {
+			headers := map[string]string{
+				"Accept":                "text/event-stream",
+				"Authorization":         "Bearer [REDACTED]",
+				"Content-Type":          "application/json",
+				"X-Orchids-Api-Version": "2",
+			}
+			logger.LogUpstreamRequest(url, headers, payload)
+		}
+
+		return c.httpClient.Do(httpReq)
+	})
+
 	if err != nil {
 		return err
 	}
+	resp := result.(*http.Response)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
