@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"math/big"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"orchids-api/internal/auth"
 	"orchids-api/internal/clerk"
 	"orchids-api/internal/model"
 	"orchids-api/internal/store"
@@ -84,14 +84,19 @@ func (a *API) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set session cookie
-	token := fmt.Sprintf("%x", sha256.Sum256([]byte(a.adminPass)))
+	token, err := auth.GenerateSessionToken()
+	if err != nil {
+		log.Printf("[ERROR] Failed to generate session token: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_token",
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		MaxAge:   86400 * 7, // 1 week
+		MaxAge:   86400 * 7,
 	})
 
 	w.WriteHeader(http.StatusOK)
@@ -99,6 +104,11 @@ func (a *API) HandleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("session_token")
+	if err == nil {
+		auth.InvalidateSessionToken(cookie.Value)
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_token",
 		Value:    "",

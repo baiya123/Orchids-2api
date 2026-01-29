@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -84,13 +85,21 @@ var defaultHTTPClient = newHTTPClient()
 
 var bufferPool = sync.Pool{
 	New: func() interface{} {
-		return new(strings.Builder)
+		sb := new(strings.Builder)
+		sb.Grow(4096)
+		return sb
 	},
 }
 
 var bufioReaderPool = sync.Pool{
 	New: func() interface{} {
-		return bufio.NewReader(nil)
+		return bufio.NewReaderSize(nil, 32768)
+	},
+}
+
+var byteBufferPool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 4096))
 	},
 }
 
@@ -130,6 +139,7 @@ func NewFromAccount(acc *store.Account, base *config.Config) *Client {
 		OrchidsAPIBaseURL:   "",
 		OrchidsWSURL:        "",
 		OrchidsAPIVersion:   "",
+		OrchidsImpl:         "",
 		OrchidsLocalWorkdir: "",
 	}
 	if base != nil {
@@ -139,6 +149,7 @@ func NewFromAccount(acc *store.Account, base *config.Config) *Client {
 		cfg.OrchidsAPIBaseURL = base.OrchidsAPIBaseURL
 		cfg.OrchidsWSURL = base.OrchidsWSURL
 		cfg.OrchidsAPIVersion = base.OrchidsAPIVersion
+		cfg.OrchidsImpl = base.OrchidsImpl
 		cfg.OrchidsLocalWorkdir = base.OrchidsLocalWorkdir
 		cfg.OrchidsAllowRunCommand = base.OrchidsAllowRunCommand
 		cfg.OrchidsRunAllowlist = base.OrchidsRunAllowlist
@@ -201,12 +212,30 @@ func (c *Client) SendRequest(ctx context.Context, prompt string, chatHistory []i
 func (c *Client) SendRequestWithPayload(ctx context.Context, req UpstreamRequest, onMessage func(SSEMessage), logger *debug.Logger) error {
 	mode := strings.ToLower(strings.TrimSpace(c.config.UpstreamMode))
 	if mode == "ws" || mode == "websocket" {
-		return c.sendRequestWS(ctx, req, onMessage, logger)
+		err := c.sendRequestWSAIClient(ctx, req, onMessage, logger)
+		if err != nil {
+			if isWSFallback(err) && ctx.Err() == nil {
+				if logger != nil {
+					logger.LogUpstreamSSE("ws_fallback", err.Error())
+				}
+				return c.sendRequestSSE(ctx, req, onMessage, logger)
+			}
+			return err
+		}
+		return nil
 	}
 	return c.sendRequestSSE(ctx, req, onMessage, logger)
 }
 
 func (c *Client) sendRequestSSE(ctx context.Context, req UpstreamRequest, onMessage func(SSEMessage), logger *debug.Logger) error {
+	timeout := 120 * time.Second
+	if c.config != nil && c.config.RequestTimeout > 0 {
+		timeout = time.Duration(c.config.RequestTimeout) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	token, err := c.GetToken()
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
@@ -227,13 +256,16 @@ func (c *Client) sendRequestSSE(ctx context.Context, req UpstreamRequest, onMess
 		Model:         req.Model,
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
+	buf := byteBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer byteBufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
 		return err
 	}
 
 	url := c.upstreamURL()
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return err
 	}
@@ -345,6 +377,11 @@ func (c *Client) upstreamURL() string {
 		return c.config.UpstreamURL
 	}
 	return upstreamURL
+}
+
+func isWSFallback(err error) bool {
+	var fallback wsFallbackError
+	return errors.As(err, &fallback)
 }
 
 func getCachedToken(sessionID string) (string, bool) {

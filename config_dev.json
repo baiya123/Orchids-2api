@@ -8,7 +8,9 @@
   "admin_token": "admin123",
   "store_mode": "sqlite",
   "orchids_api_version": "2",
-  "orchids_local_workdir": "/Users/dailin/Documents/GitHub/Orchids-2api",
+  "orchids_impl": "aiclient",
   "orchids_allow_run_command": true,
-  "orchids_run_allowlist": ["*"]
+  "orchids_run_allowlist": ["*"],
+  "upstream_mode": "ws",
+  "request_timeout": 60
 }

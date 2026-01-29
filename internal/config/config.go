@@ -50,6 +50,7 @@ type Config struct {
 	OrchidsAPIBaseURL       string   `json:"orchids_api_base_url"`
 	OrchidsWSURL            string   `json:"orchids_ws_url"`
 	OrchidsAPIVersion       string   `json:"orchids_api_version"`
+	OrchidsImpl             string   `json:"orchids_impl"`
 	OrchidsLocalWorkdir     string   `json:"orchids_local_workdir"`
 	OrchidsAllowRunCommand  bool     `json:"orchids_allow_run_command"`
 	OrchidsRunAllowlist     []string `json:"orchids_run_allowlist"`
@@ -202,6 +203,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.OrchidsAPIVersion == "" {
 		cfg.OrchidsAPIVersion = "2"
+	}
+	if cfg.OrchidsImpl == "" {
+		cfg.OrchidsImpl = "legacy"
 	}
 	if len(cfg.OrchidsRunAllowlist) == 0 {
 		cfg.OrchidsRunAllowlist = []string{"pwd", "ls", "find"}

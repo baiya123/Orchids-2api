@@ -5,11 +5,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"strings"
+	"sync"
 	"time"
 
 	"orchids-api/internal/tiktoken"
 )
+
+// hasherPool 复用 SHA256 hasher，避免频繁内存分配
+var hasherPool = sync.Pool{
+	New: func() interface{} {
+		return sha256.New()
+	},
+}
 
 // ImageSource 表示图片来源
 type ImageSource struct {
@@ -152,45 +161,81 @@ If you do not have explicit project context, do not guess; ask the user for deta
 ## 规则
 1. 仅依赖当前工具和历史上下文
 2. 用户在本地环境工作
-3. 回复简洁专业`
+3. 回复简洁专业
+4. 若 tool_result 标记为错误或包含“File does not exist / tool_use_error”，必须明确说明无法读取并请求正确路径或先使用 LS/Glob；不得臆测项目内容
+5. 调用 Glob 工具时必须提供 pattern；若需要默认值，使用 "**/*"
+6. 当对话过长或上下文过多时，必须自动压缩：先给出不丢关键事实的简短摘要，再继续回答；优先保留当前需求、关键约束、已确定结论与待办`
 
 // FormatMessagesAsMarkdown 将 Claude messages 转换为结构化的对话历史
+// 对于大量消息使用并行处理
 func FormatMessagesAsMarkdown(messages []Message) string {
 	if len(messages) == 0 {
 		return ""
 	}
 
-	var parts []string
-
-	// 排除最后一条 user 消息（它会单独作为当前请求）
 	historyMessages := messages
 	if len(messages) > 0 && messages[len(messages)-1].Role == "user" && !isToolResultOnly(messages[len(messages)-1].Content) {
 		historyMessages = messages[:len(messages)-1]
 	}
 
-	turnIndex := 1
-	for _, msg := range historyMessages {
-		switch msg.Role {
-		case "user":
-			userContent := formatUserMessage(msg.Content)
-			if userContent != "" {
-				parts = append(parts, fmt.Sprintf("<turn index=\"%d\" role=\"user\">\n%s\n</turn>", turnIndex, userContent))
-				turnIndex++
-			}
-		case "assistant":
-			assistantContent := formatAssistantMessage(msg.Content)
-			if assistantContent != "" {
-				parts = append(parts, fmt.Sprintf("<turn index=\"%d\" role=\"assistant\">\n%s\n</turn>", turnIndex, assistantContent))
-				turnIndex++
+	if len(historyMessages) == 0 {
+		return ""
+	}
+
+	// 并发阈值：少于 8 条消息时串行处理更高效
+	const parallelThreshold = 8
+
+	var formattedContents []string
+
+	if len(historyMessages) >= parallelThreshold {
+		// 并行格式化消息
+		formattedContents = make([]string, len(historyMessages))
+		var wg sync.WaitGroup
+		wg.Add(len(historyMessages))
+
+		for i, msg := range historyMessages {
+			go func(idx int, m Message) {
+				defer wg.Done()
+				var content string
+				switch m.Role {
+				case "user":
+					content = formatUserMessage(m.Content)
+				case "assistant":
+					content = formatAssistantMessage(m.Content)
+				}
+				formattedContents[idx] = content
+			}(i, msg)
+		}
+		wg.Wait()
+	} else {
+		// 串行处理小批量消息
+		formattedContents = make([]string, len(historyMessages))
+		for i, msg := range historyMessages {
+			switch msg.Role {
+			case "user":
+				formattedContents[i] = formatUserMessage(msg.Content)
+			case "assistant":
+				formattedContents[i] = formatAssistantMessage(msg.Content)
 			}
 		}
 	}
 
-	if len(parts) == 0 {
-		return ""
+	// 顺序组装结果
+	var sb strings.Builder
+	sb.Grow(len(historyMessages) * 256)
+
+	turnIndex := 1
+	for i, content := range formattedContents {
+		if content != "" {
+			if turnIndex > 1 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(fmt.Sprintf("<turn index=\"%d\" role=\"%s\">\n%s\n</turn>", turnIndex, historyMessages[i].Role, content))
+			turnIndex++
+		}
 	}
 
-	return strings.Join(parts, "\n\n")
+	return sb.String()
 }
 
 func isToolResultOnly(content MessageContent) bool {
@@ -211,38 +256,54 @@ func isToolResultOnly(content MessageContent) bool {
 
 // formatUserMessage 格式化用户消息
 func formatUserMessage(content MessageContent) string {
-	var parts []string
-
 	if content.IsString() {
 		text := strings.TrimSpace(content.GetText())
-		if text != "" {
-			parts = append(parts, text)
-		}
-		return strings.Join(parts, "\n")
+		return text
 	}
 
-	for _, block := range content.GetBlocks() {
+	blocks := content.GetBlocks()
+	if len(blocks) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(blocks) * 128)
+
+	for i, block := range blocks {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+
 		switch block.Type {
 		case "text":
 			text := strings.TrimSpace(block.Text)
 			if text != "" {
-				parts = append(parts, text)
+				sb.WriteString(text)
 			}
 		case "image":
 			if block.Source != nil {
-				parts = append(parts, fmt.Sprintf("[Image: %s]", block.Source.MediaType))
+				sb.WriteString("[Image: ")
+				sb.WriteString(block.Source.MediaType)
+				sb.WriteByte(']')
 			}
 		case "tool_result":
-			resultStr := formatToolResultContent(block.Content)
-			errorAttr := ""
 			if block.IsError {
-				errorAttr = ` is_error="true"`
+				sb.WriteString("TOOL_RESULT_ERROR: The tool failed. Do not infer file contents. Ask for the correct path or list files with LS/Glob.\n")
 			}
-			parts = append(parts, fmt.Sprintf("<tool_result tool_use_id=\"%s\"%s>\n%s\n</tool_result>", block.ToolUseID, errorAttr, resultStr))
+			resultStr := formatToolResultContent(block.Content)
+			sb.WriteString("<tool_result tool_use_id=\"")
+			sb.WriteString(block.ToolUseID)
+			sb.WriteByte('"')
+			if block.IsError {
+				sb.WriteString(` is_error="true"`)
+			}
+			sb.WriteString(">\n")
+			sb.WriteString(resultStr)
+			sb.WriteString("\n</tool_result>")
 		}
 	}
 
-	return strings.Join(parts, "\n")
+	return sb.String()
 }
 
 func formatUserMessageNoToolResult(content MessageContent) string {
@@ -275,34 +336,50 @@ func formatUserMessageNoToolResult(content MessageContent) string {
 
 // formatAssistantMessage 格式化 assistant 消息
 func formatAssistantMessage(content MessageContent) string {
-	var parts []string
-
 	if content.IsString() {
 		text := strings.TrimSpace(content.GetText())
-		if text != "" {
-			parts = append(parts, text)
-		}
-		return strings.Join(parts, "\n")
+		return text
 	}
 
-	for _, block := range content.GetBlocks() {
+	blocks := content.GetBlocks()
+	if len(blocks) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(blocks) * 128)
+	first := true
+
+	for _, block := range blocks {
 		switch block.Type {
 		case "text":
 			text := strings.TrimSpace(block.Text)
 			if text != "" {
-				parts = append(parts, text)
+				if !first {
+					sb.WriteByte('\n')
+				}
+				sb.WriteString(text)
+				first = false
 			}
 		case "thinking":
-			// 跳过 thinking 内容，不放入历史
 			continue
 		case "tool_use":
-			// 使用简洁的 JSON 格式表示工具调用
+			if !first {
+				sb.WriteByte('\n')
+			}
 			inputJSON, _ := json.Marshal(block.Input)
-			parts = append(parts, fmt.Sprintf("<tool_use id=\"%s\" name=\"%s\">\n%s\n</tool_use>", block.ID, block.Name, string(inputJSON)))
+			sb.WriteString("<tool_use id=\"")
+			sb.WriteString(block.ID)
+			sb.WriteString("\" name=\"")
+			sb.WriteString(block.Name)
+			sb.WriteString("\">\n")
+			sb.Write(inputJSON)
+			sb.WriteString("\n</tool_use>")
+			first = false
 		}
 	}
 
-	return strings.Join(parts, "\n")
+	return sb.String()
 }
 
 // formatToolResultContent 格式化工具结果内容
@@ -330,22 +407,47 @@ func formatToolResultContent(content interface{}) string {
 	}
 }
 
+// stripSystemReminders 使用单次遍历移除所有 <system-reminder>...</system-reminder> 标签
+// 优化：避免多次 Index 调用和字符串拼接
 func stripSystemReminders(text string) string {
 	const startTag = "<system-reminder>"
 	const endTag = "</system-reminder>"
-	for {
-		start := strings.Index(text, startTag)
-		if start == -1 {
-			break
-		}
-		end := strings.Index(text[start+len(startTag):], endTag)
-		if end == -1 {
-			break
-		}
-		end += start + len(startTag) + len(endTag)
-		text = text[:start] + text[end:]
+
+	// 快速路径：没有标签直接返回
+	if !strings.Contains(text, startTag) {
+		return strings.TrimSpace(text)
 	}
-	return strings.TrimSpace(text)
+
+	var sb strings.Builder
+	sb.Grow(len(text))
+
+	i := 0
+	for i < len(text) {
+		// 查找下一个 startTag
+		start := strings.Index(text[i:], startTag)
+		if start == -1 {
+			// 没有更多标签，写入剩余内容
+			sb.WriteString(text[i:])
+			break
+		}
+
+		// 写入标签之前的内容
+		sb.WriteString(text[i : i+start])
+
+		// 查找对应的 endTag
+		endStart := i + start + len(startTag)
+		end := strings.Index(text[endStart:], endTag)
+		if end == -1 {
+			// 没有结束标签，写入剩余内容
+			sb.WriteString(text[i+start:])
+			break
+		}
+
+		// 跳过整个标签块
+		i = endStart + end + len(endTag)
+	}
+
+	return strings.TrimSpace(sb.String())
 }
 
 // BuildPromptV2 构建优化的 prompt
@@ -588,16 +690,43 @@ func trimSummaryToBudget(summary string, maxTokens int) string {
 	return truncateToTokens(summary, maxTokens)
 }
 
+// hashMessages 并行计算消息哈希
 func hashMessages(messages []Message) []string {
-	hashes := make([]string, len(messages))
-	for i, msg := range messages {
-		hashes[i] = messageHash(msg)
+	if len(messages) == 0 {
+		return nil
 	}
+
+	hashes := make([]string, len(messages))
+
+	// 并发阈值：少于 8 条消息时串行处理更高效
+	const parallelThreshold = 8
+
+	if len(messages) >= parallelThreshold {
+		var wg sync.WaitGroup
+		wg.Add(len(messages))
+		for i, msg := range messages {
+			go func(idx int, m Message) {
+				defer wg.Done()
+				hashes[idx] = messageHash(m)
+			}(i, msg)
+		}
+		wg.Wait()
+	} else {
+		for i, msg := range messages {
+			hashes[i] = messageHash(msg)
+		}
+	}
+
 	return hashes
 }
 
+// messageHash 计算消息的 SHA256 哈希，使用 hasherPool 复用 hasher
 func messageHash(msg Message) string {
-	hasher := sha256.New()
+	// 从 pool 获取 hasher
+	hasher := hasherPool.Get().(hash.Hash)
+	hasher.Reset()
+	defer hasherPool.Put(hasher)
+
 	hasher.Write([]byte(msg.Role))
 	hasher.Write([]byte{0})
 
@@ -694,7 +823,47 @@ func summarizeMessages(messages []Message, maxTokens int) string {
 	return strings.Join(lines, "\n")
 }
 
+// buildSummaryLines 并行构建摘要行
 func buildSummaryLines(messages []Message, perLineTokens int) []string {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// 并发阈值：少于 8 条消息时串行处理更高效
+	const parallelThreshold = 8
+
+	type indexedLine struct {
+		index int
+		line  string
+	}
+
+	if len(messages) >= parallelThreshold {
+		results := make([]string, len(messages))
+		var wg sync.WaitGroup
+		wg.Add(len(messages))
+
+		for i, msg := range messages {
+			go func(idx int, m Message) {
+				defer wg.Done()
+				summary := summarizeMessageWithLimit(m, perLineTokens)
+				if summary != "" {
+					results[idx] = fmt.Sprintf("- %s: %s", m.Role, summary)
+				}
+			}(i, msg)
+		}
+		wg.Wait()
+
+		// 过滤空行，保持顺序
+		lines := make([]string, 0, len(messages))
+		for _, line := range results {
+			if line != "" {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+
+	// 串行处理小批量
 	var lines []string
 	for _, msg := range messages {
 		summary := summarizeMessageWithLimit(msg, perLineTokens)
@@ -735,32 +904,58 @@ func summarizeMessageWithLimit(msg Message, maxTokens int) string {
 	return truncateToTokens(strings.Join(parts, " | "), maxTokens)
 }
 
+// truncateToTokens 使用二分查找优化 token 截断，减少重复 token 估算
 func truncateToTokens(text string, maxTokens int) string {
 	if text == "" || maxTokens <= 0 {
 		return ""
 	}
+
+	// 转换一次 runes，之后复用
+	runes := []rune(text)
+
+	// 快速路径：文本足够短
 	if tiktoken.EstimateTextTokens(text) <= maxTokens {
 		return text
 	}
 
+	// 估算初始上界：假设每个 token 约 3 个 rune
 	maxRunes := maxTokens * 3
+	if maxRunes > len(runes) {
+		maxRunes = len(runes)
+	}
 	if maxRunes < 1 {
 		maxRunes = 1
 	}
-	runes := []rune(text)
+
+	// 先截断到估算的最大长度
 	if len(runes) > maxRunes {
-		text = string(runes[:maxRunes])
+		runes = runes[:maxRunes]
 	}
 
-	for tiktoken.EstimateTextTokens(text) > maxTokens && len([]rune(text)) > 1 {
-		runes = []rune(text)
-		text = string(runes[:len(runes)*2/3])
+	// 二分查找最优截断点
+	low, high := 1, len(runes)
+	bestLen := 0
+
+	for low <= high {
+		mid := (low + high) / 2
+		tokens := tiktoken.EstimateTextTokens(string(runes[:mid]))
+		if tokens <= maxTokens {
+			bestLen = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
+
+	if bestLen == 0 {
 		return ""
 	}
-	return text + "…"
+
+	result := strings.TrimSpace(string(runes[:bestLen]))
+	if result == "" {
+		return ""
+	}
+	return result + "…"
 }
 
 func removeSection(sections []string, sectionName string) []string {

@@ -598,6 +598,71 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    /* Platform Badges */
+    .badge-kiro {
+      background: #e0f2fe;
+      color: #0369a1;
+    }
+
+    .badge-orchids {
+      background: #f5f3ff;
+      color: #7c3aed;
+    }
+
+    .badge-antigravity {
+      background: #f0fdf4;
+      color: #16a34a;
+    }
+
+    .badge-warp {
+      background: #eef2ff;
+      color: #4f46e5;
+    }
+
+    .status-badge {
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .status-enabled {
+      background: #ecfdf4;
+      color: #15803d;
+    }
+
+    .default-check {
+      color: #10b981;
+      font-size: 1.1rem;
+    }
+
+    .set-default-link {
+      color: #3b82f6;
+      text-decoration: none;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+
+    .set-default-link:hover {
+      text-decoration: underline;
+    }
+
+    .tab-kiro.active {
+      background: #3b82f6 !important;
+    }
+
+    .tab-orchids.active {
+      background: #8b5cf6 !important;
+    }
+
+    .tab-antigravity.active {
+      background: #10b981 !important;
+    }
+
+    .tab-warp.active {
+      background: #6366f1 !important;
+    }
   </style>
 </head>
 
@@ -620,7 +685,7 @@
       </li>
       <li class="sidebar-item">
         <a href="#" class="sidebar-link" onclick="switchTab('models')">
-          <span>💎</span> 模型管理
+          <span>📁</span> 模型管理
         </a>
       </li>
       <li class="sidebar-item">
@@ -628,7 +693,15 @@
           <span>📖</span> 使用教程
         </a>
       </li>
+      <li class="sidebar-item">
+        <a href="#" class="sidebar-link">
+          <span>💬</span> 联系开发者
+        </a>
+      </li>
     </ul>
+    <div style="padding: 0 12px; margin-bottom: 20px;">
+      <a href="#" class="buy-button">🛒 渠道账号购买</a>
+    </div>
     <div class="sidebar-footer">
       <div class="sidebar-footer-stats">
         <div class="footer-stat-item">
@@ -997,16 +1070,20 @@
     <div id="modelsWrapper" style="display: none; height: 100%;">
       <section class="header-section" id="modelsHeader">
         <h1>模型管理</h1>
-        <p>管理各渠道的模型映射与显示配置</p>
+        <p>管理各渠道的可用模型列表</p>
       </section>
 
       <div class="toolbar" style="padding: 16px; gap: 16px;">
         <div class="filter-tabs" id="modelPlatformFilters" style="background: #f8fafc; border: 1px solid #f1f5f9;">
           <button class="tab-item active" onclick="filterModelsByChannel('')">All</button>
-          <button class="tab-item" onclick="filterModelsByChannel('Kiro')">Kiro</button>
-          <button class="tab-item" onclick="filterModelsByChannel('Orchids')">Orchids</button>
-          <button class="tab-item" onclick="filterModelsByChannel('Antigravity')">Antigravity</button>
-          <button class="tab-item" onclick="filterModelsByChannel('Warp')">Warp</button>
+          <button class="tab-item tab-kiro" onclick="filterModelsByChannel('Kiro')">Kiro</button>
+          <button class="tab-item tab-orchids" onclick="filterModelsByChannel('Orchids')">Orchids</button>
+          <button class="tab-item tab-antigravity" onclick="filterModelsByChannel('Antigravity')">Antigravity</button>
+          <button class="tab-item tab-warp" onclick="filterModelsByChannel('Warp')">Warp</button>
+        </div>
+
+        <div id="modelCountDisplay" style="color: #64748b; font-size: 0.9rem; margin-left: 8px;">
+          共 <strong id="totalModelCount">0</strong> 个模型
         </div>
 
         <div style="flex: 1; display: flex; gap: 12px; align-items: center; justify-content: flex-end;">
@@ -1892,14 +1969,15 @@
         const container = document.getElementById("modelsList");
         let filtered = models;
         if (currentModelChannel) {
-          filtered = models.filter(m => m.channel === currentModelChannel);
+          filtered = models.filter(m => m.channel.toLowerCase() === currentModelChannel.toLowerCase());
         }
 
-        // Sort: SortOrder descending, then Name ascending
+        // Sort: SortOrder ascending
         filtered.sort((a, b) => {
-          if (b.sort_order !== a.sort_order) return b.sort_order - a.sort_order;
-          return a.name.localeCompare(b.name);
+          return a.sort_order - b.sort_order;
         });
+
+        document.getElementById("totalModelCount").textContent = filtered.length;
 
         if (filtered.length === 0) {
           container.innerHTML = `
@@ -1916,11 +1994,11 @@
               <tr>
                 <th style="width: 60px;">ID</th>
                 <th>渠道</th>
-                <th>模型 ID</th>
-                <th>显示名称</th>
-                <th>权重</th>
+                <th>模型ID</th>
+                <th>模型名称</th>
                 <th>状态</th>
                 <th>默认</th>
+                <th>排序</th>
                 <th style="text-align: right;">操作</th>
               </tr>
             </thead>
@@ -1928,23 +2006,23 @@
               ${filtered.map(m => `
                 <tr>
                   <td style="color: #64748b; font-size: 0.9rem;">${m.id}</td>
-                  <td><span class="tag" style="background: #e0f2fe; color: #0284c7;">${escapeHtml(m.channel)}</span></td>
+                  <td><span class="tag badge-${m.channel.toLowerCase()}">${escapeHtml(m.channel)}</span></td>
                   <td style="font-family: monospace; color: #475569;">${escapeHtml(m.model_id)}</td>
-                  <td style="font-weight: 600; color: #1e293b;">${escapeHtml(m.name)}</td>
-                  <td>${m.sort_order}</td>
+                  <td style="font-weight: 500; color: #1e293b;">${escapeHtml(m.name)}</td>
                   <td>
-                    <span class="tag" style="
-                      background: ${m.status === 'available' ? '#ecfdf5' : m.status === 'maintenance' ? '#fffbeb' : '#fef2f2'};
-                      color: ${m.status === 'available' ? '#10b981' : m.status === 'maintenance' ? '#f59e0b' : '#ef4444'};
-                    ">
-                      ${m.status === 'available' ? '可用' : m.status === 'maintenance' ? '维护' : '下线'}
+                    <span class="status-badge status-enabled">
+                      ${m.status === 'available' || m.status === true ? '启用' : '禁用'}
                     </span>
                   </td>
-                  <td>${m.is_default ? '<span style="color: #10b981;">●</span>' : ''}</td>
+                  <td style="text-align: center;">
+                    ${m.is_default ? '<span class="default-check">✅</span>' : '-'}
+                  </td>
+                  <td>${m.sort_order}</td>
                   <td style="text-align: right;">
-                    <div style="display: flex; justify-content: flex-end; gap: 12px;">
-                      <i class="action-icon" onclick="editModel('${m.id}')" title="编辑">✏️</i>
-                      <i class="action-icon" onclick="deleteModel('${m.id}')" title="删除">🗑️</i>
+                    <div style="display: flex; justify-content: flex-end; align-items: center; gap: 12px;">
+                      <i class="action-icon" style="font-size: 1.2rem;" onclick="editModel('${m.id}')" title="编辑">📋</i>
+                      ${!m.is_default ? `<a class="set-default-link" onclick="setDefaultModel('${m.id}')">设为默认</a>` : ''}
+                      <i class="action-icon" style="font-size: 1.2rem;" onclick="deleteModel('${m.id}')" title="删除">🗑️</i>
                     </div>
                   </td>
                 </tr>
@@ -1952,6 +2030,27 @@
             </tbody>
           </table>
         `;
+      }
+
+      async function setDefaultModel(id) {
+        const model = models.find(m => m.id === id);
+        if (!model) return;
+
+        try {
+          // Updated logic to clear other defaults for same channel
+          const updatedModel = { ...model, is_default: true };
+          const res = await fetch(`/api/models/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(updatedModel),
+          });
+          if (!res.ok) throw new Error(await res.text());
+
+          showToast("设为默认成功");
+          loadModels();
+        } catch (err) {
+          showToast("设置失败: " + err.message, "error");
+        }
       }
 
       function filterModelsByChannel(channel) {

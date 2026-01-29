@@ -1,17 +1,20 @@
 package loadbalancer
 
 import (
-	"errors"
+	"fmt"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
+	"orchids-api/internal/auth"
 	"orchids-api/internal/store"
 )
 
 const defaultCacheTTL = 5 * time.Second
 
 type LoadBalancer struct {
-	store          *store.Store
+	Store          *store.Store
 	mu             sync.RWMutex
 	cachedAccounts []*store.Account
 	cacheExpires   time.Time
@@ -28,43 +31,70 @@ func NewWithCacheTTL(s *store.Store, cacheTTL time.Duration) *LoadBalancer {
 		cacheTTL = defaultCacheTTL
 	}
 	return &LoadBalancer{
-		store:       s,
+		Store:       s,
 		cacheTTL:    cacheTTL,
 		activeConns: make(map[int64]int),
 	}
 }
 
+func (lb *LoadBalancer) GetModelChannel(modelID string) string {
+	if lb.Store == nil {
+		return ""
+	}
+	m, err := lb.Store.GetModelByModelID(modelID)
+	if err != nil || m == nil {
+		return ""
+	}
+	return m.Channel
+}
+
 func (lb *LoadBalancer) GetNextAccount() (*store.Account, error) {
-	return lb.GetNextAccountExcluding(nil)
+	return lb.GetNextAccountExcludingByChannel(nil, "")
+}
+
+func (lb *LoadBalancer) GetNextAccountByChannel(channel string) (*store.Account, error) {
+	return lb.GetNextAccountExcludingByChannel(nil, channel)
 }
 
 func (lb *LoadBalancer) GetNextAccountExcluding(excludeIDs []int64) (*store.Account, error) {
+	return lb.GetNextAccountExcludingByChannel(excludeIDs, "")
+}
+
+func (lb *LoadBalancer) GetNextAccountExcludingByChannel(excludeIDs []int64, channel string) (*store.Account, error) {
 	accounts, err := lb.getEnabledAccounts()
 	if err != nil {
 		return nil, err
 	}
 
-	if len(excludeIDs) > 0 {
-		excludeSet := make(map[int64]bool)
-		for _, id := range excludeIDs {
-			excludeSet[id] = true
-		}
-		var filtered []*store.Account
-		for _, acc := range accounts {
-			if !excludeSet[acc.ID] {
-				filtered = append(filtered, acc)
-			}
-		}
-		accounts = filtered
+	var filtered []*store.Account
+	excludeSet := make(map[int64]bool)
+	for _, id := range excludeIDs {
+		excludeSet[id] = true
 	}
 
+	for _, acc := range accounts {
+		if excludeSet[acc.ID] {
+			continue
+		}
+		if channel != "" && !strings.EqualFold(acc.AgentMode, channel) {
+			continue
+		}
+		filtered = append(filtered, acc)
+	}
+	accounts = filtered
+
 	if len(accounts) == 0 {
-		return nil, errors.New("no enabled accounts available")
+		return nil, fmt.Errorf("no enabled accounts available for channel: %s", channel)
 	}
 
 	account := lb.selectAccount(accounts)
 
-	if err := lb.store.IncrementRequestCount(account.ID); err != nil {
+	log.Printf("[INFO] Selected account: %s (email: %s, session: %s)",
+		account.Name,
+		account.Email,
+		auth.MaskSensitive(account.SessionID))
+
+	if err := lb.Store.IncrementRequestCount(account.ID); err != nil {
 		return nil, err
 	}
 
@@ -83,7 +113,7 @@ func (lb *LoadBalancer) getEnabledAccounts() ([]*store.Account, error) {
 	}
 	lb.mu.RUnlock()
 
-	accounts, err := lb.store.GetEnabledAccounts()
+	accounts, err := lb.Store.GetEnabledAccounts()
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +134,11 @@ func (lb *LoadBalancer) selectAccount(accounts []*store.Account) *store.Account 
 	}
 
 	lb.mu.RLock()
-	defer lb.mu.RUnlock()
+	activeConns := make(map[int64]int, len(lb.activeConns))
+	for k, v := range lb.activeConns {
+		activeConns[k] = v
+	}
+	lb.mu.RUnlock()
 
 	var bestAccount *store.Account
 	minScore := float64(-1)
@@ -115,7 +149,7 @@ func (lb *LoadBalancer) selectAccount(accounts []*store.Account) *store.Account 
 			weight = 1
 		}
 
-		conns := lb.activeConns[acc.ID]
+		conns := activeConns[acc.ID]
 		score := float64(conns) / float64(weight)
 
 		if bestAccount == nil || score < minScore {
@@ -133,7 +167,7 @@ func (lb *LoadBalancer) selectAccount(accounts []*store.Account) *store.Account 
 func (lb *LoadBalancer) GetStats() map[int64]int {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
-	
+
 	stats := make(map[int64]int, len(lb.activeConns))
 	for id, count := range lb.activeConns {
 		stats[id] = count

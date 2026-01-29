@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"orchids-api/internal/model"
@@ -290,6 +291,51 @@ func (s *redisStore) getAccountsByIDs(ctx context.Context, ids []string, onlyEna
 		return nil, err
 	}
 
+	// 并发阈值：少于 8 项时串行处理更高效
+	const parallelThreshold = 8
+
+	if len(values) >= parallelThreshold {
+		// 并行解析 JSON
+		results := make([]*Account, len(values))
+		var wg sync.WaitGroup
+		wg.Add(len(values))
+
+		for i, value := range values {
+			go func(idx int, val interface{}, id int64) {
+				defer wg.Done()
+				if val == nil {
+					return
+				}
+				strVal, ok := val.(string)
+				if !ok || strVal == "" {
+					return
+				}
+				var acc Account
+				if err := json.Unmarshal([]byte(strVal), &acc); err != nil {
+					return
+				}
+				if acc.ID == 0 {
+					acc.ID = id
+				}
+				if onlyEnabled && !acc.Enabled {
+					return
+				}
+				results[idx] = &acc
+			}(i, value, idNums[i])
+		}
+		wg.Wait()
+
+		// 过滤 nil 结果
+		accounts := make([]*Account, 0, len(values))
+		for _, acc := range results {
+			if acc != nil {
+				accounts = append(accounts, acc)
+			}
+		}
+		return accounts, nil
+	}
+
+	// 串行处理小批量
 	accounts := make([]*Account, 0, len(values))
 	for i, value := range values {
 		if value == nil {
@@ -550,6 +596,45 @@ func (s *redisStore) getApiKeysByIDs(ctx context.Context, ids []string) ([]*ApiK
 	values, err := s.client.MGet(ctx, keys...).Result()
 	if err != nil {
 		return nil, err
+	}
+
+	const parallelThreshold = 8
+
+	if len(values) >= parallelThreshold {
+		results := make([]*ApiKey, len(values))
+		var wg sync.WaitGroup
+		wg.Add(len(values))
+
+		for i, value := range values {
+			go func(idx int, val interface{}, id int64) {
+				defer wg.Done()
+				if val == nil {
+					return
+				}
+				strVal, ok := val.(string)
+				if !ok || strVal == "" {
+					return
+				}
+				var record apiKeyRecord
+				if err := json.Unmarshal([]byte(strVal), &record); err != nil {
+					return
+				}
+				key := record.toApiKey()
+				if key.ID == 0 {
+					key.ID = id
+				}
+				results[idx] = key
+			}(i, value, idNums[i])
+		}
+		wg.Wait()
+
+		items := make([]*ApiKey, 0, len(values))
+		for _, key := range results {
+			if key != nil {
+				items = append(items, key)
+			}
+		}
+		return items, nil
 	}
 
 	items := make([]*ApiKey, 0, len(values))

@@ -193,17 +193,20 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	selectAccount := func() error {
 		if h.loadBalancer != nil {
-			account, err := h.loadBalancer.GetNextAccountExcluding(failedAccountIDs)
+			channel := h.loadBalancer.GetModelChannel(req.Model)
+			if channel != "" {
+				log.Printf("[INFO] Model recognition: %s -> Channel: %s", req.Model, channel)
+			}
+			account, err := h.loadBalancer.GetNextAccountExcludingByChannel(failedAccountIDs, channel)
 			if err != nil {
 				if h.client != nil {
 					apiClient = h.client
 					currentAccount = nil
-					log.Println("负载均衡无可用账号，使用默认配置")
+					log.Printf("[INFO] Load balancer: no available accounts for channel %s, using default config", channel)
 					return nil
 				}
 				return err
 			}
-			log.Printf("使用账号: %s (%s)", account.Name, account.Email)
 			apiClient = client.NewFromAccount(account, h.config)
 			currentAccount = account
 			return nil
@@ -2040,9 +2043,7 @@ func extractTopLevelEntries(findOutput string, limit int) []string {
 		if line == "" || line == "." {
 			continue
 		}
-		if strings.HasPrefix(line, "./") {
-			line = strings.TrimPrefix(line, "./")
-		}
+		line = strings.TrimPrefix(line, "./")
 		if line == "" || strings.Contains(line, "/") {
 			continue
 		}

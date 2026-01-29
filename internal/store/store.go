@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"orchids-api/internal/model"
 	"strings"
 	"sync"
@@ -123,6 +124,9 @@ func New(dbPath string, opts Options) (*Store, error) {
 		store.settings = redisStore
 		store.apiKeys = redisStore
 		store.models = redisStore
+		if err := store.seedModels(); err != nil {
+			log.Printf("Warning: failed to seed models in redis: %v", err)
+		}
 		return store, nil
 	}
 
@@ -190,25 +194,91 @@ func (s *Store) migrate() error {
 			last_used_at DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS models (
+			id TEXT PRIMARY KEY,
+			channel TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			status INTEGER DEFAULT 1,
+			is_default INTEGER DEFAULT 0,
+			sort_order INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_accounts_enabled ON accounts(enabled)`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_weight ON accounts(weight) WHERE enabled=1`,
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_enabled ON api_keys(enabled)`,
+		`CREATE INDEX IF NOT EXISTS idx_models_channel ON models(channel, status)`,
 	}
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	for _, q := range queries {
-		if _, err := s.db.Exec(q); err != nil {
+		if _, err := tx.Exec(q); err != nil {
 			return err
 		}
 	}
 
-	// 迁移：为现有表添加新列
-	s.db.Exec(`ALTER TABLE api_keys ADD COLUMN key_full TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE accounts ADD COLUMN token TEXT DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE accounts ADD COLUMN subscription TEXT DEFAULT 'free'`)
-	s.db.Exec(`ALTER TABLE accounts ADD COLUMN usage_current REAL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE accounts ADD COLUMN usage_total REAL DEFAULT 550`)
-	s.db.Exec(`ALTER TABLE accounts ADD COLUMN reset_date TEXT DEFAULT '-'`)
+	tx.Exec(`ALTER TABLE api_keys ADD COLUMN key_full TEXT NOT NULL DEFAULT ''`)
+	tx.Exec(`ALTER TABLE accounts ADD COLUMN token TEXT DEFAULT ''`)
+	tx.Exec(`ALTER TABLE accounts ADD COLUMN subscription TEXT DEFAULT 'free'`)
+	tx.Exec(`ALTER TABLE accounts ADD COLUMN usage_current REAL DEFAULT 0`)
+	tx.Exec(`ALTER TABLE accounts ADD COLUMN usage_total REAL DEFAULT 550`)
+	tx.Exec(`ALTER TABLE accounts ADD COLUMN reset_date TEXT DEFAULT '-'`)
 
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return s.seedModels()
+}
+
+func (s *Store) seedModels() error {
+	var count int
+	if s.models != nil {
+		models, err := s.models.ListModels()
+		if err == nil {
+			count = len(models)
+		}
+	} else {
+		s.db.QueryRow("SELECT COUNT(*) FROM models").Scan(&count)
+	}
+
+	if count > 0 {
+		return nil
+	}
+
+	models := []model.Model{
+		// Antigravity
+		{ID: "11", Channel: "Antigravity", ModelID: "gemini-2.5-flash-preview", Name: "Gemini 2.5 Flash", Status: true, IsDefault: true, SortOrder: 0},
+		{ID: "12", Channel: "Antigravity", ModelID: "gemini-3-flash-preview", Name: "Gemini 3 Flash", Status: true, IsDefault: false, SortOrder: 1},
+		{ID: "13", Channel: "Antigravity", ModelID: "gemini-3-pro-preview", Name: "Gemini 3 Pro", Status: true, IsDefault: false, SortOrder: 2},
+		{ID: "14", Channel: "Antigravity", ModelID: "gemini-3-pro-image-preview", Name: "Gemini 3 Pro Image", Status: true, IsDefault: false, SortOrder: 3},
+		{ID: "15", Channel: "Antigravity", ModelID: "gemini-2.5-computer-use-preview-1022", Name: "Gemini 2.5 Computer Use", Status: true, IsDefault: false, SortOrder: 4},
+		// Warp
+		{ID: "19", Channel: "Warp", ModelID: "claude-4-sonnet", Name: "Claude 4 Sonnet", Status: true, IsDefault: false, SortOrder: 0},
+		{ID: "20", Channel: "Warp", ModelID: "claude-4.5-sonnet", Name: "Claude 4.5 Sonnet", Status: true, IsDefault: false, SortOrder: 1},
+		{ID: "21", Channel: "Warp", ModelID: "claude-4.5-sonnet-thinking", Name: "Claude 4.5 Sonnet Thinking", Status: true, IsDefault: false, SortOrder: 2},
+		{ID: "22", Channel: "Warp", ModelID: "claude-4.5-opus", Name: "Claude 4.5 Opus", Status: true, IsDefault: true, SortOrder: 3},
+		// Orchids
+		{ID: "6", Channel: "Orchids", ModelID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", Status: true, IsDefault: true, SortOrder: 0},
+		{ID: "7", Channel: "Orchids", ModelID: "claude-opus-4-5", Name: "Claude Opus 4.5", Status: true, IsDefault: false, SortOrder: 1},
+		{ID: "8", Channel: "Orchids", ModelID: "claude-sonnet-4-5-thinking", Name: "Claude Sonnet 4.5 Thinking", Status: true, IsDefault: false, SortOrder: 2},
+		// Kiro
+		{ID: "1", Channel: "Kiro", ModelID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", Status: true, IsDefault: true, SortOrder: 0},
+		{ID: "2", Channel: "Kiro", ModelID: "claude-opus-4-5", Name: "Claude Opus 4.5", Status: true, IsDefault: false, SortOrder: 1},
+	}
+
+	for _, m := range models {
+		if err := s.CreateModel(&m); err != nil {
+			log.Printf("Failed to seed model %s: %v", m.ModelID, err)
+		}
+	}
 	return nil
 }
 
@@ -366,14 +436,14 @@ func (s *Store) GetEnabledAccounts() ([]*Account, error) {
 		SELECT id, name, session_id, client_cookie, client_uat, project_id, user_id,
 			   agent_mode, email, weight, enabled, token, subscription, usage_current, usage_total, reset_date,
 			   request_count, last_used_at, created_at, updated_at
-		FROM accounts WHERE enabled = 1 ORDER BY id
+		FROM accounts WHERE enabled = 1 ORDER BY weight DESC, id
 	`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var accounts []*Account
+	accounts := make([]*Account, 0, 10)
 	for rows.Next() {
 		acc := &Account{}
 		var lastUsedAt sql.NullTime
@@ -389,7 +459,7 @@ func (s *Store) GetEnabledAccounts() ([]*Account, error) {
 		}
 		accounts = append(accounts, acc)
 	}
-	return accounts, nil
+	return accounts, rows.Err()
 }
 
 func (s *Store) IncrementRequestCount(id int64) error {
@@ -653,35 +723,156 @@ func (s *Store) GetApiKeyByID(id int64) (*ApiKey, error) {
 
 func (s *Store) CreateModel(m *model.Model) error {
 	if s.models != nil {
+		if m.IsDefault {
+			models, err := s.models.ListModels()
+			if err == nil {
+				for _, other := range models {
+					if other.Channel == m.Channel && other.IsDefault {
+						other.IsDefault = false
+						s.models.UpdateModel(other)
+					}
+				}
+			}
+		}
 		return s.models.CreateModel(m)
 	}
-	return errors.New("sqlite store for models not implemented")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// If ID is empty, we should generate one or let DB handled (but it's TEXT PRIMARY KEY)
+	// Usually numeric IDs are used in the screenshot.
+	if m.ID == "" {
+		var maxID int
+		s.db.QueryRow("SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) FROM models").Scan(&maxID)
+		m.ID = fmt.Sprintf("%d", maxID+1)
+	}
+
+	if m.IsDefault {
+		// Clear other defaults for same channel
+		s.db.Exec("UPDATE models SET is_default = 0 WHERE channel = ?", m.Channel)
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO models (id, channel, model_id, name, status, is_default, sort_order)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, m.ID, m.Channel, m.ModelID, m.Name, m.Status, m.IsDefault, m.SortOrder)
+	return err
 }
 
 func (s *Store) UpdateModel(m *model.Model) error {
 	if s.models != nil {
+		if m.IsDefault {
+			models, err := s.models.ListModels()
+			if err == nil {
+				for _, other := range models {
+					if other.Channel == m.Channel && other.ID != m.ID && other.IsDefault {
+						other.IsDefault = false
+						s.models.UpdateModel(other)
+					}
+				}
+			}
+		}
 		return s.models.UpdateModel(m)
 	}
-	return errors.New("sqlite store for models not implemented")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if m.IsDefault {
+		// Clear other defaults for same channel
+		s.db.Exec("UPDATE models SET is_default = 0 WHERE channel = ? AND id != ?", m.Channel, m.ID)
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE models SET
+			channel = ?, model_id = ?, name = ?, status = ?, is_default = ?,
+			sort_order = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, m.Channel, m.ModelID, m.Name, m.Status, m.IsDefault, m.SortOrder, m.ID)
+	return err
 }
 
 func (s *Store) DeleteModel(id string) error {
 	if s.models != nil {
 		return s.models.DeleteModel(id)
 	}
-	return errors.New("sqlite store for models not implemented")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("DELETE FROM models WHERE id = ?", id)
+	return err
 }
 
 func (s *Store) GetModel(id string) (*model.Model, error) {
 	if s.models != nil {
 		return s.models.GetModel(id)
 	}
-	return nil, errors.New("sqlite store for models not implemented")
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m := &model.Model{}
+	err := s.db.QueryRow(`
+		SELECT id, channel, model_id, name, status, is_default, sort_order
+		FROM models WHERE id = ?
+	`, id).Scan(&m.ID, &m.Channel, &m.ModelID, &m.Name, &m.Status, &m.IsDefault, &m.SortOrder)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *Store) GetModelByModelID(modelID string) (*model.Model, error) {
+	if s.models != nil {
+		// For Redis, we do a simple scan of ListModels since the list is small
+		models, err := s.models.ListModels()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range models {
+			if m.ModelID == modelID {
+				return m, nil
+			}
+		}
+		return nil, sql.ErrNoRows
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m := &model.Model{}
+	// Prefer default models if multiple exist for same model_id
+	err := s.db.QueryRow(`
+		SELECT id, channel, model_id, name, status, is_default, sort_order
+		FROM models WHERE model_id = ? ORDER BY is_default DESC LIMIT 1
+	`, modelID).Scan(&m.ID, &m.Channel, &m.ModelID, &m.Name, &m.Status, &m.IsDefault, &m.SortOrder)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func (s *Store) ListModels() ([]*model.Model, error) {
 	if s.models != nil {
 		return s.models.ListModels()
 	}
-	return nil, errors.New("sqlite store for models not implemented")
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT id, channel, model_id, name, status, is_default, sort_order
+		FROM models ORDER BY sort_order ASC, name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var models []*model.Model
+	for rows.Next() {
+		m := &model.Model{}
+		err := rows.Scan(&m.ID, &m.Channel, &m.ModelID, &m.Name, &m.Status, &m.IsDefault, &m.SortOrder)
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, m)
+	}
+	return models, nil
 }

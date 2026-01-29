@@ -579,18 +579,51 @@ func grepSearch(baseDir, root, pattern string, ignore []string) (string, error) 
 }
 
 func runAllowedCommand(baseDir, command string, allowlist []string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", errors.New("empty command")
+	}
 	tokens, err := shellquote.Split(command)
 	if err != nil || len(tokens) == 0 {
 		return "", errors.New("invalid command")
 	}
 	allowed := map[string]bool{}
+	allowAll := false
 	for _, name := range allowlist {
-		allowed[strings.ToLower(name)] = true
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		if name == "*" || name == "all" {
+			allowAll = true
+			continue
+		}
+		allowed[name] = true
 	}
 	cmdName := strings.ToLower(tokens[0])
-	if !allowed[cmdName] {
+	if !allowAll && !allowed[cmdName] {
 		return "", fmt.Errorf("command not allowed: %s", tokens[0])
 	}
+	useShell := allowAll || containsShellMeta(command)
+	var (
+		out    string
+		runErr error
+	)
+	if useShell {
+		out, runErr = runShellCommand(baseDir, command)
+	} else {
+		out, runErr = runExecCommand(baseDir, tokens)
+	}
+	if runErr != nil {
+		return out, runErr
+	}
+	if fsMaxOutputSize > 0 && len(out) > fsMaxOutputSize {
+		out = out[:fsMaxOutputSize]
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func runExecCommand(baseDir string, tokens []string) (string, error) {
 	ctx := context.Background()
 	if fsCmdTimeout > 0 {
 		var cancel context.CancelFunc
@@ -605,11 +638,38 @@ func runAllowedCommand(baseDir, command string, allowlist []string) (string, err
 	if err := cmd.Run(); err != nil {
 		return buf.String(), err
 	}
-	out := buf.String()
-	if fsMaxOutputSize > 0 && len(out) > fsMaxOutputSize {
-		out = out[:fsMaxOutputSize]
+	return buf.String(), nil
+}
+
+func runShellCommand(baseDir, command string) (string, error) {
+	ctx := context.Background()
+	if fsCmdTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, fsCmdTimeout)
+		defer cancel()
 	}
-	return strings.TrimSpace(out), nil
+	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
+	cmd.Dir = baseDir
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), err
+	}
+	return buf.String(), nil
+}
+
+func containsShellMeta(command string) bool {
+	if strings.Contains(command, "|") || strings.Contains(command, ";") || strings.Contains(command, "&&") || strings.Contains(command, "||") {
+		return true
+	}
+	if strings.Contains(command, "<") || strings.Contains(command, ">") {
+		return true
+	}
+	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
+		return true
+	}
+	return false
 }
 
 func applyEdits(content string, input map[string]interface{}) (string, int, error) {

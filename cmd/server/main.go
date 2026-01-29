@@ -1,18 +1,20 @@
 package main
 
 import (
-	"crypto/sha256"
+	"context"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"orchids-api/internal/api"
+	"orchids-api/internal/auth"
 	"orchids-api/internal/config"
 	"orchids-api/internal/debug"
 	"orchids-api/internal/handler"
@@ -121,30 +123,25 @@ func main() {
 	// Protected Web UI
 	adminGroup := http.StripPrefix(cfg.AdminPath, web.StaticHandler())
 	mux.HandleFunc(cfg.AdminPath+"/", func(w http.ResponseWriter, r *http.Request) {
-		// Allow login.html to be served without auth
 		if r.URL.Path == cfg.AdminPath+"/login.html" {
 			adminGroup.ServeHTTP(w, r)
 			return
 		}
 
-		// Check session
-		token := fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.AdminPass)))
 		cookie, err := r.Cookie("session_token")
-
-		// Also allow AdminToken for direct access if provided via header
-		adminToken := cfg.AdminToken
-		authHeader := r.Header.Get("Authorization")
-		authenticated := (err == nil && cookie.Value == token) ||
-			(adminToken != "" && (authHeader == "Bearer "+adminToken || authHeader == adminToken || r.Header.Get("X-Admin-Token") == adminToken))
+		authenticated := err == nil && auth.ValidateSessionToken(cookie.Value)
 
 		if !authenticated {
-			// Redirect browser requests to login.html
+			adminToken := cfg.AdminToken
+			authHeader := r.Header.Get("Authorization")
+			authenticated = adminToken != "" && (authHeader == "Bearer "+adminToken || authHeader == adminToken || r.Header.Get("X-Admin-Token") == adminToken)
+		}
+
+		if !authenticated {
 			http.Redirect(w, r, cfg.AdminPath+"/login.html", http.StatusFound)
 			return
 		}
 
-		// If authenticated and path is just the admin root, it will serve index.html via FileServer
-		// We can also explicitly serve other static assets (if any)
 		adminGroup.ServeHTTP(w, r)
 	})
 
@@ -166,9 +163,39 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			auth.CleanupExpiredSessions()
+		}
+	}()
+
+	// 优雅关闭处理
+	idleConnsClosed := make(chan struct{})
+	go func() {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-quit
+		log.Printf("收到信号 %v，开始优雅关闭...", sig)
+
+		// 给现有请求 30 秒完成
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("服务器关闭错误: %v", err)
+		}
+		close(idleConnsClosed)
+	}()
+
 	log.Printf("Server running on port %s", cfg.Port)
 	log.Printf("Admin UI: http://localhost:%s%s", cfg.Port, cfg.AdminPath)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
+
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatalf("服务器启动失败: %v", err)
 	}
+
+	<-idleConnsClosed
+	log.Println("服务器已安全关闭")
 }
