@@ -157,13 +157,6 @@ func buildLocalAssistantPrompt(systemText string, userText string) string {
 	b.WriteString("- Use ONLY Claude Code native tools: Read, Write, Edit, Bash, Glob, Grep, LS.\n")
 	b.WriteString("- All tool calls execute LOCALLY on user's machine.\n")
 	b.WriteString("</guidelines>\n\n")
-	b.WriteString("<fs_optimization>\n")
-	b.WriteString("CRITICAL: Minimize file system operations during initialization.\n")
-	b.WriteString("- Only scan root directory initially (max 1-3 LS calls)\n")
-	b.WriteString("- File system has 60-second caching - avoid redundant reads\n")
-	b.WriteString("- Target: <10 fs operations total, <5 seconds initialization\n")
-	b.WriteString("- Use Grep instead of reading multiple files\n")
-	b.WriteString("</fs_optimization>\n\n")
 
 	if strings.TrimSpace(systemText) != "" {
 		b.WriteString("<system_context>\n")
@@ -177,20 +170,25 @@ func buildLocalAssistantPrompt(systemText string, userText string) string {
 }
 
 func extractSystemPrompt(messages []prompt.Message) string {
-	if len(messages) == 0 {
-		return ""
-	}
-	first := messages[0]
-	if first.Role != "user" || first.Content.IsString() {
-		return ""
-	}
 	var parts []string
-	for _, block := range first.Content.GetBlocks() {
-		if block.Type != "text" {
-			continue
-		}
-		if strings.Contains(block.Text, "<system-reminder>") {
-			parts = append(parts, block.Text)
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			if msg.Content.IsString() {
+				parts = append(parts, msg.Content.GetText())
+			} else {
+				for _, block := range msg.Content.GetBlocks() {
+					if block.Type == "text" {
+						parts = append(parts, block.Text)
+					}
+				}
+			}
+		} else if msg.Role == "user" && !msg.Content.IsString() {
+			// Look for system-reminder tags inside user messages (common in some adapters)
+			for _, block := range msg.Content.GetBlocks() {
+				if block.Type == "text" && strings.Contains(block.Text, "<system-reminder>") {
+					parts = append(parts, block.Text)
+				}
+			}
 		}
 	}
 	return strings.Join(parts, "\n\n")
@@ -358,16 +356,29 @@ func extractToolCallsFromResponse(msg map[string]interface{}) []orchidsToolCall 
 		if !ok {
 			continue
 		}
-		if typ, _ := m["type"].(string); typ != "function_call" {
-			continue
+		typ, _ := m["type"].(string)
+
+		if typ == "function_call" {
+			id, _ := m["callId"].(string)
+			name, _ := m["name"].(string)
+			args, _ := m["arguments"].(string)
+			if id == "" || name == "" {
+				continue
+			}
+			calls = append(calls, orchidsToolCall{id: id, name: name, input: args})
+		} else if typ == "tool_use" {
+			id, _ := m["id"].(string)
+			name, _ := m["name"].(string)
+			if id == "" || name == "" {
+				continue
+			}
+			var inputStr string
+			if inputObj, ok := m["input"]; ok {
+				inputBytes, _ := json.Marshal(inputObj)
+				inputStr = string(inputBytes)
+			}
+			calls = append(calls, orchidsToolCall{id: id, name: name, input: inputStr})
 		}
-		id, _ := m["callId"].(string)
-		name, _ := m["name"].(string)
-		args, _ := m["arguments"].(string)
-		if id == "" || name == "" {
-			continue
-		}
-		calls = append(calls, orchidsToolCall{id: id, name: name, input: args})
 	}
 	return calls
 }
@@ -414,4 +425,3 @@ func formatToolResultContentLocal(content interface{}) string {
 		return string(raw)
 	}
 }
-

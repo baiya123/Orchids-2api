@@ -236,7 +236,7 @@ func (c *Client) fetchToken() (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return "", fmt.Errorf("token request failed with status %d (failed to read body: %v)", resp.StatusCode, err)
 		}
@@ -387,14 +387,14 @@ func (c *Client) sendRequestSSE(ctx context.Context, req upstream.UpstreamReques
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return fmt.Errorf("upstream request failed with status %d (failed to read error body: %v)", resp.StatusCode, err)
 		}
 		return fmt.Errorf("upstream request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	limitedBody := io.LimitReader(resp.Body, 100*1024*1024)
+limitedBody := resp.Body
 
 	reader := perf.AcquireBufioReader(limitedBody)
 	defer perf.ReleaseBufioReader(reader)
@@ -596,7 +596,7 @@ func (c *Client) FetchUpstreamModels(ctx context.Context) ([]UpstreamModel, erro
 		}
 
 		// Read body for error details
-		body, rErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		body, rErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
 		errMsg := string(body)

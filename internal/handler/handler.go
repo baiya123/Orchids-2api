@@ -64,7 +64,7 @@ type toolCall struct {
 }
 
 const keepAliveInterval = 15 * time.Second
-const maxRequestBytes = 32 * 1024 * 1024
+const maxRequestBytes = 0
 const maxToolFollowups = 3
 
 type upstreamErrorClass struct {
@@ -174,12 +174,16 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ClaudeRequest
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	if maxRequestBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			h.writeErrorResponse(w, "invalid_request_error", "Request body too large", http.StatusRequestEntityTooLarge)
-			return
+		if maxRequestBytes > 0 {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				h.writeErrorResponse(w, "invalid_request_error", "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 		}
 		h.writeErrorResponse(w, "invalid_request_error", "Invalid request body", http.StatusBadRequest)
 		return

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kballard/go-shellquote"
 )
 
 const (
@@ -94,7 +93,7 @@ func (c *Client) handleFSOperation(conn *websocket.Conn, msg map[string]interfac
 	} else {
 		baseDir = c.resolveLocalWorkdir()
 	}
-	ignore := c.config.OrchidsFSIgnore
+	var ignore []string
 
 	switch operation {
 	case "edit":
@@ -379,16 +378,10 @@ func (c *Client) handleFSOperation(conn *websocket.Conn, msg map[string]interfac
 		if c.fsCache != nil {
 			c.fsCache.Clear() // Invalidate cache on command execution
 		}
-		if !c.config.OrchidsAllowRunCommand {
-			return respond(false, nil, "run_command is disabled by server config")
-		}
 		if op.Command == "" {
 			return respond(false, nil, "command is required for run_command")
 		}
-		if op.IsBackground {
-			return respond(false, nil, "background commands are not supported")
-		}
-		output, err := runAllowedCommand(baseDir, op.Command, c.config.OrchidsRunAllowlist)
+		output, err := runShellCommand(baseDir, op.Command)
 		if err != nil {
 			return respond(false, output, err.Error())
 		}
@@ -409,19 +402,12 @@ func resolvePath(baseDir, input string) (string, error) {
 		return "", errors.New("base directory is empty")
 	}
 	clean := filepath.Clean(input)
-	if clean == "." {
-		return baseDir, nil
-	}
 	if filepath.IsAbs(clean) {
-		rel, err := filepath.Rel(baseDir, clean)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return "", errors.New("path outside base directory")
-		}
+		// Allow absolute paths directly
 		return clean, nil
 	}
-	if strings.HasPrefix(clean, "..") {
-		return "", errors.New("path traversal is not allowed")
-	}
+	// Allow relative paths, even if they go outside (e.g. ../)
+	// Just join them with baseDir
 	return filepath.Join(baseDir, clean), nil
 }
 
@@ -431,7 +417,9 @@ func validatePathIgnore(baseDir, target string, ignore []string) error {
 	}
 	rel, err := filepath.Rel(baseDir, target)
 	if err != nil {
-		return err
+		// If we can't determine relative path (e.g. different drive), we assume it's not ignored
+		// since ignore patterns are typically relative to project root.
+		return nil
 	}
 	rel = filepath.ToSlash(rel)
 	if rel == "." {
@@ -806,48 +794,7 @@ func grepSearch(baseDir, root, pattern string, ignore []string) (string, error) 
 }
 
 func runAllowedCommand(baseDir, command string, allowlist []string) (string, error) {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", errors.New("empty command")
-	}
-	tokens, err := shellquote.Split(command)
-	if err != nil || len(tokens) == 0 {
-		return "", errors.New("invalid command")
-	}
-	allowed := map[string]bool{}
-	allowAll := false
-	for _, name := range allowlist {
-		name = strings.ToLower(strings.TrimSpace(name))
-		if name == "" {
-			continue
-		}
-		if name == "*" || name == "all" {
-			allowAll = true
-			continue
-		}
-		allowed[name] = true
-	}
-	cmdName := strings.ToLower(tokens[0])
-	if !allowAll && !allowed[cmdName] {
-		return "", fmt.Errorf("command not allowed: %s", tokens[0])
-	}
-	useShell := allowAll || containsShellMeta(command)
-	var (
-		out    string
-		runErr error
-	)
-	if useShell {
-		out, runErr = runShellCommand(baseDir, command)
-	} else {
-		out, runErr = runExecCommand(baseDir, tokens)
-	}
-	if runErr != nil {
-		return out, runErr
-	}
-	if fsMaxOutputSize > 0 && len(out) > fsMaxOutputSize {
-		out = out[:fsMaxOutputSize]
-	}
-	return strings.TrimSpace(out), nil
+	return runShellCommand(baseDir, command)
 }
 
 func runExecCommand(baseDir string, tokens []string) (string, error) {

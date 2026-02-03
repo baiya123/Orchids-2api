@@ -225,7 +225,7 @@ func (c *Client) SendRequestWithPayload(ctx context.Context, req upstream.Upstre
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		body, _ := io.ReadAll(resp.Body)
 		headerLog := make(map[string]string)
 		for k, v := range resp.Header {
 			headerLog[k] = strings.Join(v, ", ")

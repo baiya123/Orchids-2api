@@ -297,6 +297,7 @@ func (h *streamHandler) resetRoundState() {
 	h.activeThinkingBlockIndex = -1
 	h.activeTextBlockIndex = -1
 	h.activeBlockType = ""
+	h.blockIndex = -1
 	h.hasReturn = false
 
 	clear(h.toolBlocks)
@@ -485,6 +486,9 @@ func (h *streamHandler) finishResponse(stopReason string) {
 	h.mu.Unlock()
 
 	if h.isStream {
+		h.mu.Lock()
+		h.closeActiveBlockLocked()
+		h.mu.Unlock()
 		h.flushPendingToolCalls(stopReason, h.writeFinalSSE)
 		h.finalizeOutputTokens()
 		deltaMap := perf.AcquireMap()
@@ -570,14 +574,12 @@ func (h *streamHandler) ensureBlock(blockType string) int {
 	switch blockType {
 	case "thinking":
 		h.activeThinkingBlockIndex = idx
-		if !h.isStream {
-			h.contentBlocks = append(h.contentBlocks, map[string]interface{}{
-				"type": "thinking",
-			})
-			h.activeThinkingBlockIndex = len(h.contentBlocks) - 1
-			h.thinkingBlockBuilders[h.activeThinkingBlockIndex] = perf.AcquireStringBuilder()
-			idx = h.activeThinkingBlockIndex
-		}
+		h.contentBlocks = append(h.contentBlocks, map[string]interface{}{
+			"type": "thinking",
+		})
+		h.activeThinkingBlockIndex = len(h.contentBlocks) - 1
+		h.thinkingBlockBuilders[h.activeThinkingBlockIndex] = perf.AcquireStringBuilder()
+		idx = h.activeThinkingBlockIndex
 
 		m := perf.AcquireMap()
 		m["type"] = "content_block_start"
@@ -593,13 +595,12 @@ func (h *streamHandler) ensureBlock(blockType string) int {
 		perf.ReleaseMap(m)
 	case "text":
 		h.activeTextBlockIndex = idx
-		if !h.isStream {
-			h.contentBlocks = append(h.contentBlocks, map[string]interface{}{
-				"type": "text",
-			})
-			h.currentTextIndex = len(h.contentBlocks) - 1
-			h.textBlockBuilders[h.currentTextIndex] = perf.AcquireStringBuilder()
-		}
+		h.contentBlocks = append(h.contentBlocks, map[string]interface{}{
+			"type": "text",
+		})
+		h.activeTextBlockIndex = len(h.contentBlocks) - 1
+		h.textBlockBuilders[h.activeTextBlockIndex] = perf.AcquireStringBuilder()
+		idx = h.activeTextBlockIndex
 
 		m := perf.AcquireMap()
 		m["type"] = "content_block_start"
@@ -734,11 +735,9 @@ func (h *streamHandler) processAutoPendingCalls() {
 }
 
 func (h *streamHandler) emitAutoToolResults(results []safeToolResult) {
-	return
 }
 
 func (h *streamHandler) emitAutoToolResult(result safeToolResult) {
-	return
 }
 
 func (h *streamHandler) emitAutoNotice(text string) {
@@ -1046,7 +1045,20 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 	case "model.reasoning-start":
 		h.ensureBlock("thinking")
 
-	case "model.reasoning-delta":
+	case "model.reasoning-delta", "coding_agent.reasoning.chunk":
+		delta := ""
+		if msg.Type == "model" {
+			delta, _ = msg.Event["delta"].(string)
+		} else {
+			// coding_agent.reasoning.chunk
+			if data, ok := msg.Event["data"].(map[string]interface{}); ok {
+				delta, _ = data["text"].(string)
+			}
+		}
+		if delta == "" {
+			return
+		}
+
 		h.mu.Lock()
 		idx := h.activeThinkingBlockIndex
 		h.mu.Unlock()
@@ -1054,19 +1066,20 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 			// If we get delta but no thinking block is active, try to ensure one
 			idx = h.ensureBlock("thinking")
 		}
-		delta, _ := msg.Event["delta"].(string)
 		if h.isStream {
 			h.addOutputTokens(delta)
-		} else {
-			if h.activeThinkingBlockIndex >= 0 && h.activeThinkingBlockIndex < len(h.contentBlocks) {
-				builder, ok := h.thinkingBlockBuilders[h.activeThinkingBlockIndex]
-				if !ok {
-					builder = perf.AcquireStringBuilder()
-					h.thinkingBlockBuilders[h.activeThinkingBlockIndex] = builder
-				}
-				builder.WriteString(delta)
-			}
 		}
+		// Always update internal state for history
+		h.mu.Lock()
+		if h.activeThinkingBlockIndex >= 0 && h.activeThinkingBlockIndex < len(h.contentBlocks) {
+			builder, ok := h.thinkingBlockBuilders[h.activeThinkingBlockIndex]
+			if !ok {
+				builder = perf.AcquireStringBuilder()
+				h.thinkingBlockBuilders[h.activeThinkingBlockIndex] = builder
+			}
+			builder.WriteString(delta)
+		}
+		h.mu.Unlock()
 		m := perf.AcquireMap()
 		m["type"] = "content_block_delta"
 		m["index"] = idx
@@ -1085,14 +1098,22 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 	case "model.text-start":
 		h.ensureBlock("text")
 
-	case "model.text-delta":
-		delta, _ := msg.Event["delta"].(string)
+	case "model.text-delta", "coding_agent.output_text.delta":
+		delta := ""
+		if msg.Type == "model" {
+			delta, _ = msg.Event["delta"].(string)
+		} else {
+			// coding_agent.output_text.delta
+			delta, _ = msg.Event["delta"].(string)
+		}
+		if delta == "" {
+			return
+		}
+
 		if h.shouldSkipIntroDelta(delta) {
 			return
 		}
-		if h.shouldSuppressAutoText() {
-			return
-		}
+		// Removed shouldSuppressAutoText check as it was causing empty results in some cases
 		h.mu.Lock()
 		idx := h.activeTextBlockIndex
 		h.mu.Unlock()
@@ -1103,15 +1124,18 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		h.addOutputTokens(delta)
 		if !h.isStream {
 			h.responseText.WriteString(delta)
-			if h.currentTextIndex >= 0 && h.currentTextIndex < len(h.contentBlocks) {
-				builder, ok := h.textBlockBuilders[h.currentTextIndex]
-				if !ok {
-					builder = perf.AcquireStringBuilder()
-					h.textBlockBuilders[h.currentTextIndex] = builder
-				}
-				builder.WriteString(delta)
-			}
 		}
+		// Always update internal state for history
+		h.mu.Lock()
+		if h.activeTextBlockIndex >= 0 && h.activeTextBlockIndex < len(h.contentBlocks) {
+			builder, ok := h.textBlockBuilders[h.activeTextBlockIndex]
+			if !ok {
+				builder = perf.AcquireStringBuilder()
+				h.textBlockBuilders[h.activeTextBlockIndex] = builder
+			}
+			builder.WriteString(delta)
+		}
+		h.mu.Unlock()
 		m := perf.AcquireMap()
 		m["type"] = "content_block_delta"
 		m["index"] = idx
@@ -1127,16 +1151,17 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 	case "model.text-end":
 		h.closeActiveBlock()
 
-	case "coding_agent.initializing":
+	case "coding_agent.start", "coding_agent.initializing":
+		idx := h.ensureBlock("thinking") // Trigger/Maintain thinking state
 		if data, ok := msg.Event["data"].(map[string]interface{}); ok {
 			if message, ok := data["message"].(string); ok {
-				idx := h.ensureBlock("text")
+				// Send as thinking delta to keep block open and visible
 				deltaMap := perf.AcquireMap()
 				deltaMap["type"] = "content_block_delta"
 				deltaMap["index"] = idx
 				deltaContent := perf.AcquireMap()
-				deltaContent["type"] = "text_delta"
-				deltaContent["text"] = fmt.Sprintf("\n[System: %s]\n", message)
+				deltaContent["type"] = "thinking_delta"
+				deltaContent["thinking"] = fmt.Sprintf("\n[System: %s]\n", message)
 				deltaMap["delta"] = deltaContent
 				deltaData, _ := json.Marshal(deltaMap)
 				perf.ReleaseMap(deltaContent)

@@ -316,6 +316,7 @@ func (c *Client) handleOrchidsMessage(
 
 	case EventCodingAgentStart, EventCodingAgentInit:
 		state.preferCodingAgent = true
+		onMessage(upstream.SSEMessage{Type: msgType, Event: msg, Raw: msg})
 		return false
 
 	case EventCodingAgentTokens:
@@ -443,6 +444,10 @@ func (c *Client) handleCompletionEvent(
 	if state.textStarted {
 		onMessage(upstream.SSEMessage{Type: "model", Event: map[string]interface{}{"type": "text-end", "id": "0"}})
 	}
+	if state.reasoningStarted {
+		onMessage(upstream.SSEMessage{Type: "model", Event: map[string]interface{}{"type": "reasoning-end", "id": "0"}})
+		state.reasoningStarted = false
+	}
 	if !state.finishSent {
 		finishReason := "stop"
 		if state.sawToolCall {
@@ -542,6 +547,14 @@ func (c *Client) buildWSRequestAIClient(req upstream.UpstreamRequest) (*orchidsW
 		return nil, errors.New("server config unavailable")
 	}
 	systemText := extractSystemPrompt(req.Messages)
+	if systemText == "" && len(req.System) > 0 {
+		var sb strings.Builder
+		for _, item := range req.System {
+			sb.WriteString(item.Text)
+			sb.WriteString("\n")
+		}
+		systemText = sb.String()
+	}
 	userText, currentToolResults := extractUserMessageAIClient(req.Messages)
 	currentUserIdx := findCurrentUserMessageIndex(req.Messages)
 	var historyMessages []prompt.Message
@@ -555,15 +568,30 @@ func (c *Client) buildWSRequestAIClient(req upstream.UpstreamRequest) (*orchidsW
 	orchidsTools := convertOrchidsTools(req.Tools)
 	attachmentUrls := extractAttachmentURLsAIClient(req.Messages)
 
-	promptText := buildLocalAssistantPrompt(systemText, userText)
-	if !req.NoThinking && !isSuggestionModeText(userText) {
-		promptText = injectThinkingPrefix(promptText)
+	workingDir := req.Workdir
+	if workingDir == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			workingDir = cwd
+		}
 	}
 
-	workingDir := ""
-	if cwd, err := os.Getwd(); err == nil {
-		workingDir = cwd
+	promptText := ""
+	if req.Prompt != "" {
+		promptText = req.Prompt
+		// If we use the full provided prompt, the chatHistory in payload
+		// might be redundant or conflict with history already in req.Prompt.
+		// For Orchids WebSocket, it's often better to send history separately
+		// IF the model is in agent mode and the 'prompt' field should only be the latest instruction.
+		// However, since we've already built a consistent full prompt, let's use it as 'prompt'
+		// and CLEAR 'chatHistory' to avoid duplication.
+		chatHistory = nil
+	} else {
+		promptText = buildLocalAssistantPrompt(systemText, userText)
+		if !req.NoThinking && !isSuggestionModeText(userText) {
+			promptText = injectThinkingPrefix(promptText)
+		}
 	}
+
 	if req.NoTools {
 		orchidsTools = nil
 		toolResults = nil
@@ -587,14 +615,15 @@ func (c *Client) buildWSRequestAIClient(req upstream.UpstreamRequest) (*orchidsW
 		"attachmentUrls": attachmentUrls,
 		"currentPage":    nil,
 		"email":          "bridge@localhost",
-		"isLocal":        workingDir != "",
+		"isLocal":        false, // Set to false to prevent upstream auto-scanning
 		"isFixingErrors": false,
 		"fileStructure":  nil,
 		"userId":         defaultUserID(c.config.UserID),
 	}
-	if workingDir != "" {
-		payload["localWorkingDirectory"] = workingDir
-	}
+	// We no longer send localWorkingDirectory to avoid triggering the crawler
+	// if workingDir != "" {
+	// 	payload["localWorkingDirectory"] = workingDir
+	// }
 	if len(orchidsTools) > 0 {
 		payload["tools"] = orchidsTools
 	}

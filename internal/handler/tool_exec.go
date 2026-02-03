@@ -3,7 +3,6 @@ package handler
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,12 +13,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"orchids-api/internal/config"
 	"orchids-api/internal/orchids"
-
-	"github.com/kballard/go-shellquote"
 )
 
 const (
@@ -51,7 +47,7 @@ func executeToolCallWithBaseDir(call toolCall, cfg *config.Config, baseDir strin
 	inputMap := parseToolInputMap(call.input)
 	toolName := strings.ToLower(strings.TrimSpace(call.name))
 	toolName = strings.ToLower(orchids.NormalizeToolName(toolName))
-	ignore := cfg.OrchidsFSIgnore
+	var ignore []string
 
 	switch toolName {
 	case "read":
@@ -293,18 +289,13 @@ func executeToolCallWithBaseDir(call toolCall, cfg *config.Config, baseDir strin
 		return result
 
 	case "bash":
-		if !cfg.OrchidsAllowRunCommand {
-			result.isError = true
-			result.output = "run_command is disabled by server config"
-			return result
-		}
 		command := toolInputString(inputMap, "command", "cmd")
 		if strings.TrimSpace(command) == "" {
 			result.isError = true
 			result.output = "missing command for Bash"
 			return result
 		}
-		output, err := runAllowedCommand(baseDir, command, cfg.OrchidsRunAllowlist)
+		output, err := runShellCommand(baseDir, command)
 		if err != nil {
 			result.isError = true
 			if output != "" {
@@ -411,50 +402,22 @@ func resolveToolPath(baseDir, input string) (string, error) {
 		return "", errors.New("base directory is empty")
 	}
 	clean := filepath.Clean(input)
-	if clean == "." {
-		return baseDir, nil
-	}
 	if filepath.IsAbs(clean) {
-		rel, err := filepath.Rel(baseDir, clean)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return "", errors.New("path outside base directory")
-		}
 		return clean, nil
-	}
-	if strings.HasPrefix(clean, "..") {
-		return "", errors.New("path traversal is not allowed")
 	}
 	return filepath.Join(baseDir, clean), nil
 }
 
 func remapToolPath(baseDir, input string) (string, bool) {
-	if baseDir == "" || strings.TrimSpace(input) == "" {
+	// With relaxed restrictions, we don't really need complex remapping for containment,
+	// but we can keep it simple or just rely on resolveToolPath.
+	// Preserving a simple version for compatibility with existing calls.
+	if strings.TrimSpace(input) == "" {
 		return "", false
 	}
-	clean := filepath.Clean(input)
-	if !filepath.IsAbs(clean) {
-		return "", false
-	}
-	baseName := filepath.Base(baseDir)
-	if baseName != "" {
-		marker := string(os.PathSeparator) + baseName + string(os.PathSeparator)
-		if idx := strings.LastIndex(clean, marker); idx >= 0 {
-			suffix := clean[idx+len(marker):]
-			if suffix != "" {
-				candidate := filepath.Join(baseDir, suffix)
-				if _, err := os.Stat(candidate); err == nil {
-					return candidate, true
-				}
-			}
-		}
-	}
-	base := filepath.Base(clean)
-	if base == "" || base == string(os.PathSeparator) || base == "." {
-		return "", false
-	}
-	candidate := filepath.Join(baseDir, base)
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate, true
+	// If it works as an absolute path, good.
+	if _, err := os.Stat(input); err == nil {
+		return input, true
 	}
 	return "", false
 }
@@ -465,7 +428,8 @@ func validateToolPathIgnore(baseDir, target string, ignore []string) error {
 	}
 	rel, err := filepath.Rel(baseDir, target)
 	if err != nil {
-		return err
+		// If we can't determine relative path, assume it's NOT ignored
+		return nil
 	}
 	rel = filepath.ToSlash(rel)
 	if rel == "." {
@@ -789,79 +753,28 @@ func grepSearch(baseDir, root, pattern string, maxResults int, ignore []string) 
 }
 
 func runAllowedCommand(baseDir, command string, allowlist []string) (string, error) {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", errors.New("empty command")
-	}
-	tokens, err := shellquote.Split(command)
-	if err != nil || len(tokens) == 0 {
-		return "", errors.New("invalid command")
-	}
-	allowed := map[string]bool{}
-	allowAll := false
-	for _, name := range allowlist {
-		name = strings.ToLower(strings.TrimSpace(name))
-		if name == "" {
-			continue
-		}
-		if name == "*" || name == "all" {
-			allowAll = true
-			continue
-		}
-		allowed[name] = true
-	}
-	cmdName := strings.ToLower(tokens[0])
-	if !allowAll && !allowed[cmdName] {
-		return "", fmt.Errorf("command not allowed: %s", tokens[0])
-	}
-	useShell := allowAll || containsShellMeta(command)
-	var (
-		out    string
-		runErr error
-	)
-	if useShell {
-		out, runErr = runShellCommand(baseDir, command)
-	} else {
-		out, runErr = runExecCommand(baseDir, tokens)
-	}
-	if runErr != nil {
-		return out, runErr
-	}
-	if toolMaxOutputSize > 0 && len(out) > toolMaxOutputSize {
-		out = out[:toolMaxOutputSize]
-	}
-	return strings.TrimSpace(out), nil
+	return runShellCommand(baseDir, command)
 }
 
 func runExecCommand(baseDir string, tokens []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, tokens[0], tokens[1:]...)
+	cmd := exec.Command(tokens[0], tokens[1:]...)
 	cmd.Dir = baseDir
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return buf.String(), fmt.Errorf("command timed out: %w", err)
-		}
 		return buf.String(), err
 	}
 	return buf.String(), nil
 }
 
 func runShellCommand(baseDir, command string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
+	cmd := exec.Command("bash", "-lc", command)
 	cmd.Dir = baseDir
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return buf.String(), fmt.Errorf("command timed out: %w", err)
-		}
 		return buf.String(), err
 	}
 	return buf.String(), nil

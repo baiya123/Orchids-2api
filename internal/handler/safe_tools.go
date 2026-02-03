@@ -12,16 +12,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/kballard/go-shellquote"
 )
 
 const (
-	safeToolTimeout       = 3 * time.Second
-	safeToolMaxOutputSize = 32 * 1024
-	safeToolMaxLines      = 200
-	safeToolMaxFindDepth  = 5
+	safeToolTimeout       = 0
+	safeToolMaxOutputSize = 0
+	safeToolMaxLines      = 0
+	safeToolMaxFindDepth  = -1
 )
 
 type safeToolResult struct {
@@ -86,41 +85,18 @@ func runSafeCommand(command string) (string, error) {
 	if command == "" {
 		return "", errors.New("empty command")
 	}
-	if strings.Contains(command, ";") || strings.Contains(command, "||") {
-		return "", errors.New("unsupported command syntax")
-	}
-
 	baseDir, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve working directory: %w", err)
 	}
-
-	segments := splitByAndAnd(command)
-	var outputs []string
-	var lastErr error
-
-	for _, segment := range segments {
-		segment = strings.TrimSpace(segment)
-		if segment == "" {
-			continue
+	out, runErr := runShellCommand(baseDir, command)
+	if runErr != nil {
+		if strings.TrimSpace(out) != "" {
+			return out, nil
 		}
-		out, err := runSafeSegment(baseDir, segment)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if out != "" {
-			outputs = append(outputs, out)
-		}
+		return "", runErr
 	}
-
-	if len(outputs) == 0 && lastErr != nil {
-		return "", lastErr
-	}
-	if lastErr != nil {
-		outputs = append(outputs, "[warning] "+lastErr.Error())
-	}
-	return strings.Join(outputs, "\n"), nil
+	return out, nil
 }
 
 func splitByAndAnd(command string) []string {
@@ -211,7 +187,7 @@ func applyHead(segment string, input string) (string, error) {
 			count = value
 		}
 	}
-	if count > safeToolMaxLines {
+	if safeToolMaxLines > 0 && count > safeToolMaxLines {
 		count = safeToolMaxLines
 	}
 	if len(lines) > count {
@@ -248,12 +224,16 @@ func runSafeLS(baseDir string, args []string) (string, error) {
 		targetDir = clean
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), safeToolTimeout)
-	defer cancel()
-
 	lsArgs := append([]string{}, flags...)
 	lsArgs = append(lsArgs, targetDir)
-	cmd := exec.CommandContext(ctx, "ls", lsArgs...)
+	var cmd *exec.Cmd
+	if safeToolTimeout > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), safeToolTimeout)
+		defer cancel()
+		cmd = exec.CommandContext(ctx, "ls", lsArgs...)
+	} else {
+		cmd = exec.Command("ls", lsArgs...)
+	}
 	cmd.Dir = baseDir
 
 	output, err := captureLimitedOutput(cmd)
@@ -362,7 +342,7 @@ func runSafeFind(baseDir string, args []string) (string, error) {
 		if rel != "." {
 			depth = strings.Count(rel, "/")
 		}
-		if depth > maxDepth {
+		if maxDepth >= 0 && depth > maxDepth {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -392,7 +372,7 @@ func runSafeFind(baseDir string, args []string) (string, error) {
 		}
 
 		lines = append(lines, rel)
-		if len(lines) >= safeToolMaxLines {
+		if safeToolMaxLines > 0 && len(lines) >= safeToolMaxLines {
 			return errors.New("output limit reached")
 		}
 		return nil
@@ -421,25 +401,29 @@ func isHiddenPath(root, path string) bool {
 
 func safeRelPath(baseDir, path string) (string, error) {
 	if filepath.IsAbs(path) {
-		return "", errors.New("absolute paths are not allowed")
+		return path, nil
 	}
 	clean := filepath.Clean(path)
 	if clean == "." {
 		return baseDir, nil
 	}
-	if strings.HasPrefix(clean, "..") {
-		return "", errors.New("path traversal is not allowed")
-	}
+	// Allow traversal with .. since restrictions are relaxed
 	full := filepath.Join(baseDir, clean)
 	return full, nil
 }
 
 func captureLimitedOutput(cmd *exec.Cmd) (string, error) {
 	var buf bytes.Buffer
-	limit := int64(safeToolMaxOutputSize)
-	lw := &limitWriter{w: &buf, limit: limit}
-	cmd.Stdout = lw
-	cmd.Stderr = lw
+	if safeToolMaxOutputSize > 0 {
+		limit := int64(safeToolMaxOutputSize)
+		lw := &limitWriter{w: &buf, limit: limit}
+		cmd.Stdout = lw
+		cmd.Stderr = lw
+	} else {
+		// 取消输出上限，直接收集完整输出
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+	}
 
 	err := cmd.Run()
 	out := buf.String()
