@@ -175,19 +175,47 @@ func isSuggestionMode(messages []prompt.Message) bool {
 }
 
 func containsSuggestionMode(text string) bool {
-	return strings.Contains(strings.ToLower(text), "suggestion mode")
+	clean := stripSystemRemindersForMode(text)
+	return strings.Contains(strings.ToLower(clean), "suggestion mode")
 }
 
 func containsPlanReminder(text string) bool {
-	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "<system-reminder>") {
-		return false
-	}
+	clean := stripSystemRemindersForMode(text)
+	lower := strings.ToLower(clean)
 	if strings.Contains(lower, "plan mode") || strings.Contains(lower, "planning") || strings.Contains(lower, "plan") {
 		return true
 	}
-	if strings.Contains(text, "计划模式") || strings.Contains(text, "计划") || strings.Contains(text, "规划") {
+	if strings.Contains(clean, "计划模式") || strings.Contains(clean, "计划") || strings.Contains(clean, "规划") {
 		return true
 	}
 	return false
+}
+
+// stripSystemRemindersForMode 移除 <system-reminder>...</system-reminder>，避免误判 plan/suggestion 模式
+func stripSystemRemindersForMode(text string) string {
+	const startTag = "<system-reminder>"
+	const endTag = "</system-reminder>"
+	if !strings.Contains(text, startTag) {
+		return text
+	}
+	var sb strings.Builder
+	sb.Grow(len(text))
+	i := 0
+	for i < len(text) {
+		start := strings.Index(text[i:], startTag)
+		if start == -1 {
+			sb.WriteString(text[i:])
+			break
+		}
+		sb.WriteString(text[i : i+start])
+		blockStart := i + start
+		endStart := blockStart + len(startTag)
+		end := strings.Index(text[endStart:], endTag)
+		if end == -1 {
+			sb.WriteString(text[blockStart:])
+			break
+		}
+		i = endStart + end + len(endTag)
+	}
+	return sb.String()
 }

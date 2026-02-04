@@ -595,13 +595,10 @@ func (c *Client) buildWSRequestAIClient(req upstream.UpstreamRequest) (*orchidsW
 	promptText := ""
 	if req.Prompt != "" {
 		promptText = req.Prompt
-		// If we use the full provided prompt, the chatHistory in payload
-		// might be redundant or conflict with history already in req.Prompt.
-		// For Orchids WebSocket, it's often better to send history separately
-		// IF the model is in agent mode and the 'prompt' field should only be the latest instruction.
-		// However, since we've already built a consistent full prompt, let's use it as 'prompt'
-		// and CLEAR 'chatHistory' to avoid duplication.
-		chatHistory = nil
+		// 非 AIClient 模式下，若 prompt 已包含完整历史，则避免 chatHistory 重复注入。
+		if c.config == nil || !strings.EqualFold(strings.TrimSpace(c.config.OrchidsImpl), "aiclient") {
+			chatHistory = nil
+		}
 	} else {
 		promptText = buildLocalAssistantPrompt(systemText, userText)
 		if !req.NoThinking && !isSuggestionModeText(userText) {

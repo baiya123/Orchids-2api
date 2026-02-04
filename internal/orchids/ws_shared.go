@@ -81,10 +81,14 @@ func hasThinkingPrefix(text string) bool {
 }
 
 func injectThinkingPrefix(prompt string) string {
-	if strings.TrimSpace(prompt) == "" || hasThinkingPrefix(prompt) {
+	if hasThinkingPrefix(prompt) {
 		return prompt
 	}
-	return buildThinkingPrefix() + "\n" + prompt
+	prefix := buildThinkingPrefix()
+	if prefix == "" {
+		return prompt
+	}
+	return prefix + "\n" + prompt
 }
 
 func buildLocalAssistantPrompt(systemText string, userText string) string {
@@ -139,7 +143,9 @@ func buildLocalAssistantPrompt(systemText string, userText string) string {
 4. 使用 Bash 执行测试/构建命令
 5. 使用 Grep 搜索代码
 
-识别到具体文件路径后，下一个 Action 必须是 Read，无需等待用户确认。
+工具语义（断言）：Read 的 offset 为 1 基行号；同一响应内只能发起一次 Read，二次 Read 视为错误。
+若 Tool Results 已覆盖用户要求的行/范围，禁止再次 Read；否则 Read 一次后直接回答。
+避免自相矛盾：不要同时要求“必须再读”与“已读结果”。
 确保路径来自于本地文件系统，禁止使用云端路径。
 
 ## 响应风格
@@ -167,6 +173,99 @@ func buildLocalAssistantPrompt(systemText string, userText string) string {
 	b.WriteString(userText)
 	b.WriteString("\n</user_message>\n")
 	return b.String()
+}
+
+// BuildAIClientPromptAndHistory 构建 AIClient 风格 prompt，并提取 chatHistory（用于 SSE/WS 统一行为）。
+// 返回的 chatHistory 为 {role, content} 结构，避免重复注入 messages。
+func BuildAIClientPromptAndHistory(messages []prompt.Message, system []prompt.SystemItem, noThinking bool) (string, []map[string]string) {
+	systemText := extractSystemPrompt(messages)
+	if strings.TrimSpace(systemText) == "" && len(system) > 0 {
+		var sb strings.Builder
+		for _, item := range system {
+			if strings.TrimSpace(item.Text) == "" {
+				continue
+			}
+			sb.WriteString(item.Text)
+			sb.WriteString("\n")
+		}
+		systemText = sb.String()
+	}
+
+	userText, _ := extractUserMessageAIClient(messages)
+	currentUserIdx := findCurrentUserMessageIndex(messages)
+	if currentUserIdx >= 0 && !hasUserPlainText(messages[currentUserIdx]) {
+		previousText := findLatestUserText(messages[:currentUserIdx])
+		if previousText != "" {
+			if strings.TrimSpace(userText) != "" {
+				userText = previousText + "\n\n[Tool Results]\n" + userText
+			} else {
+				userText = previousText
+			}
+		}
+	}
+	var historyMessages []prompt.Message
+	if currentUserIdx >= 0 {
+		historyMessages = messages[:currentUserIdx]
+	} else {
+		historyMessages = messages
+	}
+	chatHistory, _ := convertChatHistoryAIClient(historyMessages)
+
+	promptText := buildLocalAssistantPrompt(systemText, userText)
+	if !noThinking && !isSuggestionModeText(userText) {
+		promptText = injectThinkingPrefix(promptText)
+	}
+	return promptText, chatHistory
+}
+
+func hasUserPlainText(msg prompt.Message) bool {
+	if msg.Role != "user" {
+		return false
+	}
+	if msg.Content.IsString() {
+		text := strings.TrimSpace(msg.Content.GetText())
+		return text != "" && !strings.Contains(text, "<system-reminder>")
+	}
+	for _, block := range msg.Content.GetBlocks() {
+		if block.Type != "text" {
+			continue
+		}
+		text := strings.TrimSpace(block.Text)
+		if text != "" && !strings.Contains(text, "<system-reminder>") {
+			return true
+		}
+	}
+	return false
+}
+
+func findLatestUserText(messages []prompt.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		if msg.Content.IsString() {
+			text := strings.TrimSpace(msg.Content.GetText())
+			if text != "" && !strings.Contains(text, "<system-reminder>") {
+				return text
+			}
+		} else {
+			var parts []string
+			for _, block := range msg.Content.GetBlocks() {
+				if block.Type != "text" {
+					continue
+				}
+				text := strings.TrimSpace(block.Text)
+				if text != "" && !strings.Contains(text, "<system-reminder>") {
+					parts = append(parts, text)
+				}
+			}
+			if len(parts) > 0 {
+				return strings.TrimSpace(strings.Join(parts, "\n"))
+			}
+		}
+	}
+	return ""
 }
 
 func extractSystemPrompt(messages []prompt.Message) string {

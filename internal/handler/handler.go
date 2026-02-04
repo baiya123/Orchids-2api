@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	rtdebug "runtime/debug"
@@ -38,6 +40,10 @@ type Handler struct {
 
 	sessionWorkdirsMu sync.RWMutex
 	sessionWorkdirs   map[string]string // Map conversationKey -> string (workdir)
+
+	recentReqMu      sync.Mutex
+	recentRequests   map[string]*recentRequest
+	recentCleanupRun time.Time
 }
 
 type UpstreamClient interface {
@@ -66,6 +72,13 @@ type toolCall struct {
 
 const keepAliveInterval = 15 * time.Second
 const maxRequestBytes = 0
+const duplicateWindow = 2 * time.Second
+const duplicateCleanupWindow = 10 * time.Second
+
+type recentRequest struct {
+	last    time.Time
+	inFlight int
+}
 
 type upstreamErrorClass struct {
 	category      string
@@ -132,6 +145,7 @@ func NewWithLoadBalancer(cfg *config.Config, lb *loadbalancer.LoadBalancer) *Han
 		loadBalancer:    lb,
 		summaryLog:      cfg.SummaryCacheLog,
 		sessionWorkdirs: make(map[string]string),
+		recentRequests:  make(map[string]*recentRequest),
 	}
 	if cfg != nil {
 		client := orchids.New(cfg)
@@ -165,6 +179,100 @@ func (h *Handler) writeErrorResponse(w http.ResponseWriter, errType string, mess
 	})
 }
 
+func (h *Handler) computeRequestHash(r *http.Request, body []byte) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(r.URL.Path))
+	hasher.Write([]byte{0})
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		hasher.Write([]byte(auth))
+	}
+	hasher.Write([]byte{0})
+	hasher.Write(body)
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func (h *Handler) registerRequest(hash string) (bool, bool) {
+	now := time.Now()
+	h.recentReqMu.Lock()
+	defer h.recentReqMu.Unlock()
+	if h.recentRequests == nil {
+		h.recentRequests = make(map[string]*recentRequest)
+	}
+	if rec, ok := h.recentRequests[hash]; ok {
+		if now.Sub(rec.last) <= duplicateWindow {
+			return true, rec.inFlight > 0
+		}
+		rec.last = now
+		rec.inFlight++
+		h.cleanupRecentLocked(now)
+		return false, false
+	}
+	h.recentRequests[hash] = &recentRequest{last: now, inFlight: 1}
+	h.cleanupRecentLocked(now)
+	return false, false
+}
+
+func (h *Handler) finishRequest(hash string) {
+	now := time.Now()
+	h.recentReqMu.Lock()
+	defer h.recentReqMu.Unlock()
+	rec, ok := h.recentRequests[hash]
+	if !ok {
+		return
+	}
+	if rec.inFlight > 0 {
+		rec.inFlight--
+	}
+	rec.last = now
+	h.cleanupRecentLocked(now)
+}
+
+func (h *Handler) cleanupRecentLocked(now time.Time) {
+	if len(h.recentRequests) < 256 && now.Sub(h.recentCleanupRun) < duplicateCleanupWindow {
+		return
+	}
+	for k, rec := range h.recentRequests {
+		if rec.inFlight == 0 && now.Sub(rec.last) > duplicateCleanupWindow {
+			delete(h.recentRequests, k)
+		}
+	}
+	h.recentCleanupRun = now
+}
+
+func (h *Handler) writeDuplicateResponse(w http.ResponseWriter, req ClaudeRequest) {
+	if req.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		msgStart, _ := json.Marshal(map[string]interface{}{
+			"type": "message_start",
+			"message": map[string]interface{}{
+				"id":      "dup",
+				"type":    "message",
+				"role":    "assistant",
+				"content": []interface{}{},
+				"model":   req.Model,
+			},
+		})
+		fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", msgStart)
+		msgStop, _ := json.Marshal(map[string]string{"type": "message_stop"})
+		fmt.Fprintf(w, "event: message_stop\ndata: %s\n\n", msgStop)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"type":     "duplicate_request",
+		"deduped":  true,
+		"message":  "duplicate request suppressed",
+		"model":    req.Model,
+		"streamed": false,
+	})
+}
+
 func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
@@ -185,7 +293,8 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if maxRequestBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
 		if maxRequestBytes > 0 {
 			var maxErr *http.MaxBytesError
 			if errors.As(err, &maxErr) {
@@ -196,6 +305,19 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		h.writeErrorResponse(w, "invalid_request_error", "Invalid request body", http.StatusBadRequest)
 		return
 	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		h.writeErrorResponse(w, "invalid_request_error", "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	reqHash := h.computeRequestHash(r, bodyBytes)
+	slog.Debug("Request fingerprint", "hash", reqHash, "path", r.URL.Path, "content_length", len(bodyBytes), "retry", r.Header.Get("X-Stainless-Retry-Count"))
+	if dup, inFlight := h.registerRequest(reqHash); dup {
+		slog.Warn("Duplicate request suppressed", "hash", reqHash, "in_flight", inFlight, "path", r.URL.Path, "user_agent", r.UserAgent())
+		h.writeDuplicateResponse(w, req)
+		return
+	}
+	defer h.finishRequest(reqHash)
 
 	// 初始化调试日志
 	logger := debug.New(h.config.DebugEnabled, h.config.DebugLogSSE)
@@ -279,7 +401,7 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	suppressThinking := false
 	if suggestionMode {
 		gateNoTools = true
-		suppressThinking = true
+		suppressThinking = false
 	}
 	effectiveTools := req.Tools
 	if h.config.WarpDisableTools != nil && *h.config.WarpDisableTools {
@@ -331,16 +453,32 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Debug("Starting prompt build...", "conversation_id", conversationKey)
-	builtPrompt := prompt.BuildPromptV2WithOptions(prompt.ClaudeAPIRequest{
-		Model:    req.Model,
-		Messages: req.Messages,
-		System:   req.System,
-		Tools:    effectiveTools,
-		Stream:   req.Stream,
-	}, opts)
-	slog.Debug("Prompt build completed", "duration", time.Since(startBuild))
+	isOrchidsAIClient := false
+	if _, ok := apiClient.(*orchids.Client); ok && strings.EqualFold(strings.TrimSpace(h.config.OrchidsImpl), "aiclient") {
+		isOrchidsAIClient = true
+	}
+
+	var aiClientHistory []map[string]string
+	var builtPrompt string
+	if isOrchidsAIClient {
+		builtPrompt, aiClientHistory = orchids.BuildAIClientPromptAndHistory(req.Messages, req.System, suggestionMode)
+	} else {
+		builtPrompt = prompt.BuildPromptV2WithOptions(prompt.ClaudeAPIRequest{
+			Model:    req.Model,
+			Messages: req.Messages,
+			System:   req.System,
+			Tools:    effectiveTools,
+			Stream:   req.Stream,
+		}, opts)
+	}
+	buildDuration := time.Since(startBuild)
+	slog.Debug("Prompt build completed", "duration", buildDuration)
 	if h.config.DebugEnabled {
-		slog.Info("[Performance] BuildPromptV2WithOptions", "duration", time.Since(startBuild))
+		buildLabel := "BuildPromptV2WithOptions"
+		if isOrchidsAIClient {
+			buildLabel = "BuildAIClientPromptAndHistory"
+		}
+		slog.Info("[Performance] "+buildLabel, "duration", buildDuration)
 		if opts.ProjectContext != "" {
 			slog.Debug("Project context injected", "context", opts.ProjectContext)
 		}
@@ -426,9 +564,16 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	preflightResults, preflightHistory := h.executePreflightTools(toolCallMode, allowBashName, userText)
 	shouldLocalFallback = len(preflightResults) > 0
 
-	// Pre-allocate charHistory
-	chatHistory = make([]interface{}, 0, 10+len(preflightHistory))
-	chatHistory = append(chatHistory, preflightHistory...)
+	// Pre-allocate chatHistory
+	if isOrchidsAIClient {
+		chatHistory = make([]interface{}, 0, len(aiClientHistory))
+		for _, item := range aiClientHistory {
+			chatHistory = append(chatHistory, item)
+		}
+	} else {
+		chatHistory = make([]interface{}, 0, 10+len(preflightHistory))
+		chatHistory = append(chatHistory, preflightHistory...)
+	}
 
 	localContext := formatLocalToolResults(preflightResults)
 	if localContext != "" {
@@ -506,9 +651,6 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		turnCount := 1
 		followupCount := 0
 		chatSessionID := "chat_" + randomSessionID()
-		seenToolKeys := make(map[string]struct{})
-		cachedRepeatCount := 0
-
 		for {
 			slog.Debug("Starting turn", "turn", turnCount, "mode", toolCallMode)
 			sh.internalNeedsFollowup = false // Reset per retry/turn
@@ -520,13 +662,20 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			retryDelay := time.Duration(h.config.RetryDelay) * time.Millisecond
 			retriesRemaining := maxRetries
 
+			payloadMessages := upstreamMessages
+			payloadSystem := req.System
+			if isOrchidsAIClient {
+				payloadMessages = nil
+				payloadSystem = nil
+			}
+
 			upstreamReq := upstream.UpstreamRequest{
 				Prompt:        builtPrompt,
 				ChatHistory:   chatHistory,
 				Workdir:       effectiveWorkdir,
 				Model:         mappedModel,
-				Messages:      upstreamMessages,
-				System:        []prompt.SystemItem(req.System),
+				Messages:      payloadMessages,
+				System:        payloadSystem,
 				Tools:         effectiveTools,
 				NoTools:       gateNoTools,
 				NoThinking:    suggestionMode,
@@ -668,30 +817,6 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			}
 			if ((toolCallMode == "internal" || toolCallMode == "auto") && sh.internalNeedsFollowup) || (sh.internalNeedsFollowup && len(sh.internalToolResults) > 0) {
 				if toolCallMode == "internal" || toolCallMode == "auto" {
-					repeatOnly := true
-					for _, res := range sh.internalToolResults {
-						key := toolCallKey(res.call.name, res.call.input)
-						if key == "" {
-							continue
-						}
-						if _, ok := seenToolKeys[key]; !ok {
-							repeatOnly = false
-							seenToolKeys[key] = struct{}{}
-						}
-					}
-					if len(sh.internalToolResults) == 0 {
-						repeatOnly = true
-					}
-					if repeatOnly {
-						if sh.hadToolCacheHit() && cachedRepeatCount < 1 {
-							cachedRepeatCount++
-						} else {
-							slog.Warn("检测到重复工具调用，但用户要求无限制，继续执行", "turn", turnCount)
-							sh.emitAutoNotice("[警告] 检测到重复工具调用，继续执行...")
-							// sh.finishResponse("end_turn")
-							// return
-						}
-					}
 					// Disable max followups limit
 					/*
 						if followupCount >= h.config.MaxToolFollowups {
@@ -782,13 +907,21 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 					)
 
 					// Rebuild prompt for next round to include updated history
-					builtPrompt = prompt.BuildPromptV2WithOptions(prompt.ClaudeAPIRequest{
-						Model:    req.Model,
-						Messages: upstreamMessages,
-						System:   req.System,
-						Tools:    effectiveTools,
-						Stream:   req.Stream,
-					}, opts)
+					if isOrchidsAIClient {
+						builtPrompt, aiClientHistory = orchids.BuildAIClientPromptAndHistory(upstreamMessages, req.System, suggestionMode)
+						chatHistory = chatHistory[:0]
+						for _, item := range aiClientHistory {
+							chatHistory = append(chatHistory, item)
+						}
+					} else {
+						builtPrompt = prompt.BuildPromptV2WithOptions(prompt.ClaudeAPIRequest{
+							Model:    req.Model,
+							Messages: upstreamMessages,
+							System:   req.System,
+							Tools:    effectiveTools,
+							Stream:   req.Stream,
+						}, opts)
+					}
 					inputTokens = h.estimateInputTokens(r.Context(), req.Model, builtPrompt)
 					sh.setUsageTokens(inputTokens, -1)
 					logger.LogConvertedPrompt(builtPrompt)

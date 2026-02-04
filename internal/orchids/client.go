@@ -322,6 +322,14 @@ func (c *Client) sendRequestSSE(ctx context.Context, req upstream.UpstreamReques
 		return fmt.Errorf("failed to get token: %w", err)
 	}
 
+	payloadMessages := req.Messages
+	payloadSystem := req.System
+	if c.config != nil && strings.EqualFold(strings.TrimSpace(c.config.OrchidsImpl), "aiclient") {
+		// AIClient 模式：避免 prompt + messages 双份注入上下文
+		payloadMessages = nil
+		payloadSystem = nil
+	}
+
 	payload := AgentRequest{
 		Prompt:        req.Prompt,
 		ChatHistory:   req.ChatHistory,
@@ -335,8 +343,8 @@ func (c *Client) sendRequestSSE(ctx context.Context, req upstream.UpstreamReques
 		UserID:        c.config.UserID,
 		APIVersion:    2,
 		Model:         req.Model,
-		Messages:      req.Messages,
-		System:        req.System,
+		Messages:      payloadMessages,
+		System:        payloadSystem,
 		Tools:         req.Tools,
 	}
 

@@ -85,10 +85,6 @@ type streamHandler struct {
 	preflightResults      []safeToolResult
 	shouldLocalFallback   bool
 
-	// Edit Tool State
-	editFilePath  string
-	editNewString string
-
 	// Throttling
 	lastScanTime time.Time
 
@@ -735,31 +731,11 @@ func (h *streamHandler) processAutoPendingCalls() {
 	})
 
 	// Append results in order
+
+	// Append results in order
 	for _, res := range results {
 		h.internalToolResults = append(h.internalToolResults, res)
 	}
-
-	h.emitAutoToolResults(results)
-}
-
-func (h *streamHandler) emitAutoToolResults(results []safeToolResult) {
-}
-
-func (h *streamHandler) emitAutoToolResult(result safeToolResult) {
-}
-
-func (h *streamHandler) emitAutoNotice(text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	note := "\n" + text + "\n"
-	h.addOutputTokens(note)
-	if h.isStream {
-		h.emitTextBlock(note)
-		return
-	}
-	h.responseText.WriteString(note)
 }
 
 func normalizeToolResultOutput(output string) string {
@@ -1000,15 +976,6 @@ func normalizeIntroKey(delta string) string {
 	return ""
 }
 
-func (h *streamHandler) shouldSuppressAutoText() bool {
-	if h.toolCallMode != "auto" {
-		return false
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.autoToolCallSeen
-}
-
 func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 	if h.config.DebugEnabled && msg.Type != "content_block_delta" {
 		slog.Debug("Incoming SSE", "type", msg.Type)
@@ -1026,8 +993,13 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 			eventKey = "model." + evtType
 		}
 	}
-	if h.suppressThinking && strings.HasPrefix(eventKey, "model.reasoning-") {
-		return
+	if h.suppressThinking {
+		if strings.HasPrefix(eventKey, "model.reasoning-") ||
+			strings.HasPrefix(eventKey, "coding_agent.reasoning") ||
+			eventKey == "coding_agent.start" ||
+			eventKey == "coding_agent.initializing" {
+			return
+		}
 	}
 
 	getUsageInt := func(usage map[string]interface{}, key string) (int, bool) {
@@ -1277,7 +1249,7 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		h.toolInputNames[toolID] = toolName
 		h.toolInputBuffers[toolID] = perf.AcquireStringBuilder()
 		h.toolInputHadDelta[toolID] = false
-		if !h.isStream || (h.toolCallMode != "proxy" && h.toolCallMode != "auto") {
+		if !h.isStream || h.toolCallMode != "proxy" {
 			return
 		}
 		h.addOutputTokens(finalName)
@@ -1317,7 +1289,7 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if delta != "" {
 			h.toolInputHadDelta[toolID] = true
 		}
-		if !h.isStream || (h.toolCallMode != "proxy" && h.toolCallMode != "auto") || delta == "" {
+		if !h.isStream || h.toolCallMode != "proxy" || delta == "" {
 			return
 		}
 		idx, ok := h.toolBlocks[toolID]
@@ -1335,20 +1307,6 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		h.writeSSE("content_block_delta", string(deltaData))
 		perf.ReleaseMap(deltaMap)
 		perf.ReleaseMap(m)
-
-	case "coding_agent.Edit.edit.started":
-		// Redundant: handled via standard model.tool-call
-		return
-
-	case "coding_agent.Edit.edit.chunk":
-		// Redundant: handled via standard model.tool-call
-		return
-
-	case "coding_agent.Edit.edit.completed":
-		// Redundant: handled via standard model.tool-call
-		h.editFilePath = ""
-		h.editNewString = ""
-		return
 
 	case "model.tool-input-end":
 		toolID, _ := msg.Event["id"].(string)
@@ -1369,7 +1327,7 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if buf, ok := h.toolInputBuffers[toolID]; ok {
 			inputStr = strings.TrimSpace(buf.String())
 		}
-		if h.isStream && (h.toolCallMode == "proxy" || h.toolCallMode == "auto") {
+		if h.isStream && h.toolCallMode == "proxy" {
 			if inputStr != "" {
 				h.addOutputTokens(inputStr)
 			}
