@@ -256,12 +256,6 @@ func mapOrchidsToolName(raw string, inputStr string, index []toolNameInfo, allow
 	}
 
 	for _, info := range index {
-		if info.short == short {
-			return info.name
-		}
-	}
-
-	for _, info := range index {
 		if info.short == strings.ToLower(mapped) {
 			return info.name
 		}

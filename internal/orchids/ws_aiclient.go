@@ -21,7 +21,12 @@ import (
 var orchidsAIClientModels = []string{
 	"claude-sonnet-4-5",
 	"claude-opus-4-5",
+	"claude-opus-4.5",
 	"claude-haiku-4-5",
+	"claude-sonnet-4-5-thinking",
+	"claude-opus-4-5-thinking",
+	"claude-sonnet-4-20250514",
+	"claude-3-7-sonnet-20250219",
 	"gemini-3-flash",
 	"gpt-5.2",
 }
@@ -623,7 +628,7 @@ func (c *Client) buildWSURLAIClient(token string) string {
 	}
 	wsURL := strings.TrimSpace(c.config.OrchidsWSURL)
 	if wsURL == "" {
-		wsURL = "wss://orchids-v2-alpha-108292236521.europe-west1.run.app/agent/ws/coding-agent"
+		wsURL = orchidsWSDefaultURL
 	}
 	sep := "?"
 	if strings.Contains(wsURL, "?") {
@@ -733,9 +738,16 @@ func normalizeAIClientModel(model string) string {
 	}
 	switch mapped {
 	case "claude-haiku-4-5":
+		// Orchids 不支持 haiku，降级到 sonnet
 		mapped = "claude-sonnet-4-5"
 	case "claude-opus-4-5":
 		mapped = "claude-opus-4.5"
+	case "claude-sonnet-4-5-thinking":
+		// thinking 变体保持原名
+	case "claude-opus-4-5-thinking":
+		// thinking 变体保持原名
+	case "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219":
+		// 旧版模型保持原名
 	}
 	if !containsString(orchidsAIClientModels, mapped) {
 		return orchidsAIClientDefaultModel

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"orchids-api/internal/auth"
+	"orchids-api/internal/orchids"
 	"orchids-api/internal/store"
 
 	"golang.org/x/sync/singleflight"
@@ -121,6 +122,16 @@ func (lb *LoadBalancer) GetNextAccountExcludingByChannel(ctx context.Context, ex
 	return account, nil
 }
 
+// deepCopyAccounts 深拷贝账号切片，避免并发请求共享同一指针导致数据竞争
+func deepCopyAccounts(src []*store.Account) []*store.Account {
+	dst := make([]*store.Account, len(src))
+	for i, acc := range src {
+		copied := *acc
+		dst[i] = &copied
+	}
+	return dst
+}
+
 func (lb *LoadBalancer) getEnabledAccounts(ctx context.Context) ([]*store.Account, error) {
 	now := time.Now()
 
@@ -128,8 +139,7 @@ func (lb *LoadBalancer) getEnabledAccounts(ctx context.Context) ([]*store.Accoun
 	val, err, _ := lb.sfGroup.Do("getEnabledAccounts", func() (interface{}, error) {
 		lb.mu.RLock()
 		if len(lb.cachedAccounts) > 0 && now.Before(lb.cacheExpires) {
-			accounts := make([]*store.Account, len(lb.cachedAccounts))
-			copy(accounts, lb.cachedAccounts)
+			accounts := deepCopyAccounts(lb.cachedAccounts)
 			lb.mu.RUnlock()
 			return accounts, nil
 		}
@@ -145,9 +155,7 @@ func (lb *LoadBalancer) getEnabledAccounts(ctx context.Context) ([]*store.Accoun
 		lb.cacheExpires = now.Add(lb.cacheTTL)
 		lb.mu.Unlock()
 
-		cached := make([]*store.Account, len(accounts))
-		copy(cached, accounts)
-		return cached, nil
+		return deepCopyAccounts(accounts), nil
 	})
 
 	if err != nil {
@@ -223,6 +231,13 @@ func (lb *LoadBalancer) ReleaseConnection(accountID int64) {
 	}
 }
 
+const (
+	// 401 冷却时间：token 可能已刷新，较短间隔后重试
+	retry401Default = 5 * time.Minute
+	// 403/404 冷却时间：账号可能被封禁或配置错误，较长间隔后重试
+	retry403Default = 24 * time.Hour
+)
+
 func (lb *LoadBalancer) isAccountAvailable(ctx context.Context, acc *store.Account) bool {
 	status := strings.TrimSpace(acc.StatusCode)
 	if status == "" {
@@ -253,12 +268,36 @@ func (lb *LoadBalancer) isAccountAvailable(ctx context.Context, acc *store.Accou
 			return true
 		}
 		return false
+	case "401":
+		// 401 表示 token 过期或会话失效，短时间冷却后自动恢复尝试
+		if acc.LastAttempt.IsZero() {
+			return false
+		}
+		if now.Sub(acc.LastAttempt) >= retry401Default {
+			lb.clearAccountStatus(ctx, acc, "401 冷却完成，自动恢复尝试")
+			return true
+		}
+		return false
+	case "403", "404":
+		// 403/404 可能是临时封禁或配置问题，较长冷却后自动恢复
+		if acc.LastAttempt.IsZero() {
+			return false
+		}
+		if now.Sub(acc.LastAttempt) >= retry403Default {
+			lb.clearAccountStatus(ctx, acc, status+" 冷却完成，自动恢复尝试")
+			return true
+		}
+		return false
 	default:
 		return false
 	}
 }
 
 func (lb *LoadBalancer) clearAccountStatus(ctx context.Context, acc *store.Account, reason string) {
+	// 清除 token 缓存，防止恢复后仍使用失效的旧 token
+	if acc.SessionID != "" {
+		orchids.InvalidateCachedToken(acc.SessionID)
+	}
 	acc.StatusCode = ""
 	acc.LastAttempt = time.Time{}
 	acc.QuotaResetAt = time.Time{}

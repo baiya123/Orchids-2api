@@ -111,18 +111,26 @@ func (h *Handler) updateAccountStats(account *store.Account, inputTokens, output
 	}(account.ID, inputTokens, outputTokens)
 }
 
-func (h *Handler) syncWarpState(account *store.Account, client UpstreamClient) {
-	if account != nil && strings.EqualFold(account.AccountType, "warp") {
-		if h.loadBalancer != nil && h.loadBalancer.Store != nil {
-			if warpClient, ok := client.(*warp.Client); ok {
-				if warpClient.SyncAccountState() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					if err := h.loadBalancer.Store.UpdateAccount(ctx, account); err != nil {
-						slog.Warn("同步 Warp 账号令牌失败", "account", account.Name, "error", err)
-					}
-				}
-			}
+func (h *Handler) syncWarpState(account *store.Account, client UpstreamClient, snapshot *store.Account) {
+	if account == nil || h.loadBalancer == nil || h.loadBalancer.Store == nil {
+		return
+	}
+
+	var changed bool
+	if strings.EqualFold(account.AccountType, "warp") {
+		if warpClient, ok := client.(*warp.Client); ok {
+			changed = warpClient.SyncAccountState()
+		}
+	} else if orchidsClient, ok := client.(*orchids.Client); ok {
+		// Orchids 账号：通过快照比较检测 forceRefreshToken 是否更新了账号信息
+		changed = orchidsClient.SyncAccountState(snapshot)
+	}
+
+	if changed {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.loadBalancer.Store.UpdateAccount(ctx, account); err != nil {
+			slog.Warn("同步账号令牌失败", "account", account.Name, "type", account.AccountType, "error", err)
 		}
 	}
 }

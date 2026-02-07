@@ -22,6 +22,7 @@ type MemoryCache struct {
 	ttl       time.Duration
 	items     map[string]cacheItem
 	sizeBytes int64
+	done      chan struct{}
 }
 
 type cacheItem struct {
@@ -37,6 +38,7 @@ func NewMemoryCache(ttl time.Duration) *MemoryCache {
 	c := &MemoryCache{
 		ttl:   ttl,
 		items: make(map[string]cacheItem),
+		done:  make(chan struct{}),
 	}
 	// Start background cleanup
 	go c.cleanupLoop()

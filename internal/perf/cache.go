@@ -15,13 +15,17 @@ type TTLCache struct {
 	items map[string]CacheItem
 	mu    sync.RWMutex
 	ttl   time.Duration
+	done  chan struct{}
 }
 
 func NewTTLCache(ttl time.Duration) *TTLCache {
-	return &TTLCache{
+	c := &TTLCache{
 		items: make(map[string]CacheItem),
 		ttl:   ttl,
+		done:  make(chan struct{}),
 	}
+	go c.cleanupLoop()
+	return c
 }
 
 func (c *TTLCache) Set(key string, value interface{}) {
@@ -71,4 +75,33 @@ func (c *TTLCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.items = make(map[string]CacheItem)
+}
+
+func (c *TTLCache) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now().UnixNano()
+			c.mu.Lock()
+			for key, item := range c.items {
+				if now > item.Expiration {
+					delete(c.items, key)
+				}
+			}
+			c.mu.Unlock()
+		case <-c.done:
+			return
+		}
+	}
+}
+
+// Close 停止后台清理 goroutine
+func (c *TTLCache) Close() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
 }

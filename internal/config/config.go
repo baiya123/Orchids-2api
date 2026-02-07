@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -129,7 +130,7 @@ func Load(path string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("unsupported config extension: %s", ext)
 	}
 
-	applyDefaults(&cfg)
+	ApplyDefaults(&cfg)
 	return &cfg, resolvedPath, nil
 }
 
@@ -148,7 +149,7 @@ func resolveConfigPath(path string) (string, error) {
 	return "", errors.New("config.json/config.yaml/config.yml not found")
 }
 
-func applyDefaults(cfg *Config) {
+func ApplyDefaults(cfg *Config) {
 	if cfg.Port == "" {
 		cfg.Port = "3002"
 	}
@@ -157,6 +158,7 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.AdminPass == "" {
 		cfg.AdminPass = "admin123"
+		slog.Warn("使用默认管理员密码 admin123，请在配置文件中设置 admin_pass")
 	}
 	if cfg.AdminPath == "" {
 		cfg.AdminPath = "/admin"

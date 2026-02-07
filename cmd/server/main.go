@@ -82,6 +82,8 @@ func main() {
 			slog.Warn("Failed to load config from Redis, using file config", "error", err)
 		} else {
 			slog.Info("Config loaded from Redis")
+			// 重新应用默认值，防止 Redis 中缺少新增字段导致零值覆盖
+			config.ApplyDefaults(cfg)
 			// Enforce lower refresh interval if it's too high (legacy default was 30)
 			if cfg.TokenRefreshInterval > 5 {
 				slog.Info("Enforcing lower token refresh interval", "old", cfg.TokenRefreshInterval, "new", 1)

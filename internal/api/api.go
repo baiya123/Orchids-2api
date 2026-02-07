@@ -127,6 +127,8 @@ func (a *API) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * 7,
 	})
 

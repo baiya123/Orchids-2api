@@ -16,11 +16,11 @@ func classifyAccountStatus(errStr string) string {
 		return "429"
 	case strings.Contains(lower, "quota_exceeded") || strings.Contains(lower, "quota exceeded") || strings.Contains(lower, "quota"):
 		return "quota_exceeded"
-	case strings.Contains(lower, "401") || strings.Contains(lower, "signed out") || strings.Contains(lower, "signed_out"):
+	case hasExplicitHTTPStatus(lower, "401") || strings.Contains(lower, "signed out") || strings.Contains(lower, "signed_out") || strings.Contains(lower, "unauthorized"):
 		return "401"
-	case strings.Contains(lower, "403"):
+	case hasExplicitHTTPStatus(lower, "403") || strings.Contains(lower, "forbidden"):
 		return "403"
-	case strings.Contains(lower, "404"):
+	case hasExplicitHTTPStatus(lower, "404"):
 		return "404"
 	default:
 		return ""
@@ -61,6 +61,12 @@ func markAccountStatus(ctx context.Context, store *store.Store, acc *store.Accou
 		return
 	}
 
+	// 避免重复标记同一状态，防止冷却计时器被反复重置
+	if acc.StatusCode == status {
+		slog.Debug("账号状态已存在，跳过重复标记", "account_id", acc.ID, "status", status)
+		return
+	}
+
 	now := time.Now()
 	acc.StatusCode = status
 	acc.LastAttempt = now
@@ -75,6 +81,8 @@ func markAccountStatus(ctx context.Context, store *store.Store, acc *store.Accou
 	slog.Info("账号状态已标记", "account_id", acc.ID, "status", status)
 }
 
+// nextMonthStart 与 loadbalancer 包中的同名函数重复，
+// 但因跨包无法直接共享，保留各自副本。
 func nextMonthStart(now time.Time) time.Time {
 	year, month, _ := now.Date()
 	loc := now.Location()

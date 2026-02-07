@@ -833,31 +833,63 @@ func normalizeModel(model string) string {
 	}
 
 	known := map[string]struct{}{
-		"auto":              {},
-		"auto-efficient":    {},
-		"auto-genius":       {},
-		"warp-basic":        {},
-		"gpt-5":             {},
-		"gpt-4o":            {},
-		"gpt-4.1":           {},
-		"o3":                {},
-		"o4-mini":           {},
-		"gemini-2.5-pro":    {},
-		"claude-4-sonnet":   {},
-		"claude-4-opus":     {},
-		"claude-4.1-opus":   {},
-		"claude-4-5-sonnet": {},
-		"claude-4-5-opus":   {},
+		"auto":                     {},
+		"auto-efficient":           {},
+		"auto-genius":              {},
+		"warp-basic":               {},
+		"claude-4-sonnet":          {},
+		"claude-4-5-sonnet":        {},
+		"claude-4-5-sonnet-thinking": {},
+		"claude-4-5-opus":          {},
+		"claude-4-5-opus-thinking": {},
+		"claude-4-6-opus-high":     {},
+		"claude-4-6-opus-max":      {},
+		"claude-4-5-haiku":         {},
+		"claude-4-opus":            {},
+		"claude-4.1-opus":          {},
+		"gpt-5":                    {},
+		"gpt-5-low":                {},
+		"gpt-5-medium":             {},
+		"gpt-5-high":               {},
+		"gpt-5-1-low":              {},
+		"gpt-5-1-medium":           {},
+		"gpt-5-1-high":             {},
+		"gpt-5-1-codex-low":        {},
+		"gpt-5-1-codex-medium":     {},
+		"gpt-5-1-codex-high":       {},
+		"gpt-5-1-codex-max-low":    {},
+		"gpt-4o":                   {},
+		"gpt-4.1":                  {},
+		"o3":                       {},
+		"o4-mini":                  {},
+		"gemini-2-5-pro":           {},
+		"gemini-2.5-pro":           {},
+		"gemini-3-pro":             {},
 	}
 	if _, ok := known[model]; ok {
 		return model
 	}
 
 	if strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet 4.5") {
+		if strings.Contains(model, "thinking") {
+			return "claude-4-5-sonnet-thinking"
+		}
 		return "claude-4-5-sonnet"
 	}
+	if strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus 4.6") {
+		if strings.Contains(model, "max") {
+			return "claude-4-6-opus-max"
+		}
+		return "claude-4-6-opus-high"
+	}
 	if strings.Contains(model, "opus-4-5") || strings.Contains(model, "opus 4.5") {
+		if strings.Contains(model, "thinking") {
+			return "claude-4-5-opus-thinking"
+		}
 		return "claude-4-5-opus"
+	}
+	if strings.Contains(model, "haiku-4-5") || strings.Contains(model, "haiku 4.5") {
+		return "claude-4-5-haiku"
 	}
 	if strings.Contains(model, "sonnet-4") {
 		return "claude-4-sonnet"
@@ -866,8 +898,5 @@ func normalizeModel(model string) string {
 		return "claude-4-opus"
 	}
 
-	if model == "auto" {
-		return "auto"
-	}
 	return "auto"
 }

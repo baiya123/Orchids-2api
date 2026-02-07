@@ -207,10 +207,10 @@ func containsSuggestionMode(text string) bool {
 func containsPlanReminder(text string) bool {
 	clean := stripSystemRemindersForMode(text)
 	lower := strings.ToLower(clean)
-	if strings.Contains(lower, "plan mode") || strings.Contains(lower, "planning") || strings.Contains(lower, "plan") {
+	if strings.Contains(lower, "plan mode") || strings.Contains(lower, "planning mode") {
 		return true
 	}
-	if strings.Contains(clean, "计划模式") || strings.Contains(clean, "计划") || strings.Contains(clean, "规划") {
+	if strings.Contains(clean, "计划模式") || strings.Contains(clean, "规划模式") {
 		return true
 	}
 	return false

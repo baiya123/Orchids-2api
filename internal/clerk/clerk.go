@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+const (
+	// Clerk API 版本参数，升级时统一修改
+	ClerkAPIVersion = "2025-11-10"
+	ClerkJSVersion  = "5.117.0"
+
+	// 默认项目 ID
+	DefaultProjectID = "280b7bae-cd29-41e4-a0a6-7f603c43b607"
+
+	// Clerk 基础 URL
+	ClerkBaseURL = "https://clerk.orchids.app"
+
+	// 请求 User-Agent
+	clerkUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Orchids/0.0.57 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
+)
+
 type ClientResponse struct {
 	Response struct {
 		ID                  string `json:"id"`
@@ -45,14 +60,14 @@ func FetchAccountInfo(clientCookie string) (*AccountInfo, error) {
 }
 
 func FetchAccountInfoWithProject(clientCookie string, customProjectID string) (*AccountInfo, error) {
-	url := "https://clerk.orchids.app/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=5.117.0"
+	url := fmt.Sprintf("%s/v1/client?__clerk_api_version=%s&_clerk_js_version=%s", ClerkBaseURL, ClerkAPIVersion, ClerkJSVersion)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Orchids/0.0.57 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36")
+	req.Header.Set("User-Agent", clerkUserAgent)
 	req.Header.Set("Accept-Language", "zh-CN")
 	req.Header.Set("Origin", "https://www.orchids.app")
 	req.Header.Set("Referer", "https://www.orchids.app/")
@@ -84,7 +99,7 @@ func FetchAccountInfoWithProject(clientCookie string, customProjectID string) (*
 		return nil, fmt.Errorf("no email address found")
 	}
 
-	projectID := "280b7bae-cd29-41e4-a0a6-7f603c43b607"
+	projectID := DefaultProjectID
 	if customProjectID != "" {
 		projectID = customProjectID
 	}

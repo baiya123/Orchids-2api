@@ -411,7 +411,7 @@ func (c *Client) RefreshAccount(ctx context.Context) (string, error) {
 	return jwt, nil
 }
 
-// SyncAccountState 同步内存会话中的 JWT 到账号信息，返回是否有变更。
+// SyncAccountState 同步内存会话中的 JWT 和 refresh_token 到账号信息，返回是否有变更。
 func (c *Client) SyncAccountState() bool {
 	if c == nil || c.session == nil || c.account == nil {
 		return false
@@ -420,6 +420,12 @@ func (c *Client) SyncAccountState() bool {
 	jwt := strings.TrimSpace(c.session.currentJWT())
 	if jwt != "" && jwt != c.account.Token {
 		c.account.Token = jwt
+		changed = true
+	}
+	// 同步 refresh_token，防止服务重启后使用已轮换的旧令牌
+	newRefresh := strings.TrimSpace(c.session.currentRefreshToken())
+	if newRefresh != "" && newRefresh != c.account.RefreshToken {
+		c.account.RefreshToken = newRefresh
 		changed = true
 	}
 	return changed

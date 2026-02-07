@@ -20,6 +20,7 @@ const (
 	orchidsWSPingInterval   = 10 * time.Second
 	orchidsWSUserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Orchids/0.0.57 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
 	orchidsWSOrigin         = "https://www.orchids.app"
+	orchidsWSDefaultURL     = "wss://orchids-v2-alpha-108292236521.europe-west1.run.app/agent/ws/coding-agent"
 	orchidsThinkingBudget   = 10000
 	orchidsThinkingMin      = 1024
 	orchidsThinkingMax      = 128000

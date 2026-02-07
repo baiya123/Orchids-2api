@@ -22,6 +22,16 @@ var globalSessionStore = &SessionStore{
 	sessions: make(map[string]time.Time),
 }
 
+func init() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			CleanupExpiredSessions()
+		}
+	}()
+}
+
 func GenerateSessionToken() (string, error) {
 	bytes := make([]byte, sessionTokenLength)
 	if _, err := rand.Read(bytes); err != nil {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 )
@@ -37,7 +36,9 @@ func New(enabled bool, sseEnabled bool) *Logger {
 		suffix = hex.EncodeToString(randBytes[:])
 	}
 	dir := filepath.Join("debug-logs", fmt.Sprintf("%s_%s", timestamp, suffix))
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return &Logger{enabled: false}
+	}
 
 	return &Logger{
 		enabled:    true,
@@ -218,32 +219,4 @@ func (l *Logger) writeFile(filename string, content string) {
 		return
 	}
 	os.WriteFile(filepath.Join(l.dir, filename), []byte(content), 0644)
-}
-
-func cleanupOldDirs(basePath string, maxKeep int) {
-	entries, err := os.ReadDir(basePath)
-	if err != nil {
-		return
-	}
-
-	var dirs []os.DirEntry
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, e)
-		}
-	}
-
-	if len(dirs) <= maxKeep {
-		return
-	}
-
-	// 按名称排序（时间戳格式，越新越大）
-	sort.Slice(dirs, func(i, j int) bool {
-		return dirs[i].Name() > dirs[j].Name()
-	})
-
-	// 删除旧的
-	for i := maxKeep; i < len(dirs); i++ {
-		os.RemoveAll(filepath.Join(basePath, dirs[i].Name()))
-	}
 }

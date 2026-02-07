@@ -102,29 +102,6 @@ func estimateWordTokens(length int) int {
 	return (length + 3) / 4
 }
 
-// EstimateInputTokens 估算输入 prompt 的 token 数量
-func EstimateInputTokens(prompt string) int {
-	return EstimateTokens(prompt)
-}
-
-// EstimateOutputTokens 估算输出文本的 token 数量
-func EstimateOutputTokens(text string) int {
-	return EstimateTokens(text)
-}
-
-// EstimateChineseTokens 专门估算中文文本的 token 数量
-// 中文平均每个字符约 1.5 tokens
-func EstimateChineseTokens(text string) int {
-	count := 0
-	for _, r := range text {
-		// 检查是否是中文字符（CJK 统一表意文字）
-		if r >= 0x4E00 && r <= 0x9FFF {
-			count++
-		}
-	}
-	return int(float64(count) * 1.5)
-}
-
 // EstimateTextTokens 简单估算：CJK 字符约 1.5 token/char，ASCII 单词约 1 token/word
 func EstimateTextTokens(text string) int {
 	if text == "" {

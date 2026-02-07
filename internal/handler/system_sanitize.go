@@ -86,17 +86,37 @@ func filterWarpSystemItems(system SystemItems) (SystemItems, bool) {
 
 func isClaudeCodeSystem(text string) bool {
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "claude code") ||
-		strings.Contains(lower, "claude agent sdk") ||
-		strings.Contains(lower, "you are an interactive cli tool") ||
-		strings.Contains(lower, "todowrite tool") ||
-		strings.Contains(lower, "task tool") ||
-		strings.Contains(lower, "skill tool") ||
-		strings.Contains(lower, "vscode") ||
-		strings.Contains(lower, "claude-sonnet") ||
-		strings.Contains(lower, "claude-opus") ||
-		strings.Contains(lower, "system-reminder") {
-		return true
+	// 强特征：单独出现即可判定
+	strongSignals := []string{
+		"claude code",
+		"claude agent sdk",
+		"you are an interactive cli tool",
+		"todowrite tool",
+		"skill tool",
+	}
+	for _, sig := range strongSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	// 弱特征：需要至少命中 2 个才判定，避免误判正常内容
+	weakSignals := []string{
+		"task tool",
+		"vscode",
+		"system-reminder",
+		"claude-sonnet",
+		"claude-opus",
+		"enterplanmode",
+		"exitplanmode",
+	}
+	hits := 0
+	for _, sig := range weakSignals {
+		if strings.Contains(lower, sig) {
+			hits++
+			if hits >= 2 {
+				return true
+			}
+		}
 	}
 	return false
 }

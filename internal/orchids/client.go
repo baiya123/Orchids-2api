@@ -25,7 +25,8 @@ import (
 	"orchids-api/internal/upstream"
 )
 
-const upstreamURL = "https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io/agent/coding-agent"
+const defaultUpstreamBaseURL = "https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io"
+const upstreamURL = defaultUpstreamBaseURL + "/agent/coding-agent"
 
 const (
 	defaultTokenTTL = 5 * time.Minute
@@ -192,9 +193,11 @@ func (c *Client) forceRefreshToken() (string, error) {
 		info, err := clerk.FetchAccountInfoWithProject(c.config.ClientCookie, c.config.ProjectID)
 		if err == nil && info.JWT != "" {
 			c.applyAccountInfo(info)
+			c.persistAccountInfo(info)
 			setCachedToken(c.config.SessionID, info.JWT)
 			return info.JWT, nil
 		}
+		slog.Warn("Clerk token 刷新失败，尝试 session token", "error", err)
 	}
 
 	return c.fetchToken()
@@ -206,7 +209,8 @@ func (c *Client) fetchToken() (string, error) {
 		return "", errors.New("missing orchids session id")
 	}
 
-	url := fmt.Sprintf("https://clerk.orchids.app/v1/client/sessions/%s/tokens?__clerk_api_version=2025-11-10&_clerk_js_version=5.117.0", sid)
+	url := fmt.Sprintf("%s/v1/client/sessions/%s/tokens?__clerk_api_version=%s&_clerk_js_version=%s",
+		clerk.ClerkBaseURL, sid, clerk.ClerkAPIVersion, clerk.ClerkJSVersion)
 
 	ctx, cancel := withDefaultTimeout(context.Background(), c.requestTimeout())
 	defer cancel()
@@ -261,6 +265,41 @@ func (c *Client) applyAccountInfo(info *clerk.AccountInfo) {
 	if strings.TrimSpace(info.Email) != "" {
 		c.config.Email = info.Email
 	}
+}
+
+// persistAccountInfo 将刷新后的账号信息同步回 store，防止重启后丢失。
+func (c *Client) persistAccountInfo(info *clerk.AccountInfo) {
+	if c.account == nil || info == nil {
+		return
+	}
+	if strings.TrimSpace(info.SessionID) != "" {
+		c.account.SessionID = info.SessionID
+	}
+	if strings.TrimSpace(info.ClientUat) != "" {
+		c.account.ClientUat = info.ClientUat
+	}
+	if strings.TrimSpace(info.ProjectID) != "" {
+		c.account.ProjectID = info.ProjectID
+	}
+	if strings.TrimSpace(info.UserID) != "" {
+		c.account.UserID = info.UserID
+	}
+	if strings.TrimSpace(info.Email) != "" {
+		c.account.Email = info.Email
+	}
+}
+
+// SyncAccountState 检查 forceRefreshToken 是否更新了账号信息，返回是否有实际变更。
+// 通过快照比较避免基于 UpdatedAt 的不可靠检测。
+func (c *Client) SyncAccountState(snapshot *store.Account) bool {
+	if c.account == nil || snapshot == nil {
+		return false
+	}
+	return c.account.SessionID != snapshot.SessionID ||
+		c.account.ClientUat != snapshot.ClientUat ||
+		c.account.ProjectID != snapshot.ProjectID ||
+		c.account.UserID != snapshot.UserID ||
+		c.account.Email != snapshot.Email
 }
 
 func (c *Client) SendRequest(ctx context.Context, prompt string, chatHistory []interface{}, model string, onMessage func(upstream.SSEMessage), logger *debug.Logger) error {
@@ -502,8 +541,7 @@ func (c *Client) FetchUpstreamModels(ctx context.Context) ([]UpstreamModel, erro
 	defer cancel()
 
 	// Replace /agent/coding-agent with /v1/models if needed, or just append /v1/models if base is different
-	// The upstreamURL in client.go is "https://orchids-server.../agent/coding-agent"
-	baseURL := "https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io"
+	baseURL := defaultUpstreamBaseURL
 	if c.config != nil && c.config.OrchidsAPIBaseURL != "" {
 		baseURL = c.config.OrchidsAPIBaseURL
 	}
@@ -620,6 +658,17 @@ func setCachedToken(sessionID, token string) {
 		token:     token,
 		expiresAt: expiresAt,
 	}
+	tokenCache.mu.Unlock()
+}
+
+// InvalidateCachedToken 清除指定 sessionID 的 token 缓存，
+// 用于账号 401 冷却恢复后强制重新获取 token。
+func InvalidateCachedToken(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	tokenCache.mu.Lock()
+	delete(tokenCache.items, sessionID)
 	tokenCache.mu.Unlock()
 }
 

@@ -174,6 +174,12 @@ func (c *Client) handleFSOperation(conn *websocket.Conn, msg map[string]interfac
 		if err := validatePathIgnore(baseDir, path, ignore); err != nil {
 			return respond(false, nil, err.Error())
 		}
+		// 安全保护：禁止删除 baseDir 本身
+		absPath, _ := filepath.Abs(path)
+		absBase, _ := filepath.Abs(baseDir)
+		if absPath == absBase {
+			return respond(false, nil, "refusing to delete project root directory")
+		}
 		if err := os.RemoveAll(path); err != nil {
 			return respond(false, nil, err.Error())
 		}
@@ -643,10 +649,6 @@ func grepSearch(baseDir, root, pattern string, ignore []string) (string, error) 
 	return output, nil
 }
 
-func runAllowedCommand(baseDir, command string, allowlist []string) (string, error) {
-	return runShellCommand(baseDir, command)
-}
-
 func runExecCommand(baseDir string, tokens []string) (string, error) {
 	ctx := context.Background()
 	if fsCmdTimeout > 0 {
@@ -681,19 +683,6 @@ func runShellCommand(baseDir, command string) (string, error) {
 		return buf.String(), err
 	}
 	return buf.String(), nil
-}
-
-func containsShellMeta(command string) bool {
-	if strings.Contains(command, "|") || strings.Contains(command, ";") || strings.Contains(command, "&&") || strings.Contains(command, "||") {
-		return true
-	}
-	if strings.Contains(command, "<") || strings.Contains(command, ">") {
-		return true
-	}
-	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
-		return true
-	}
-	return false
 }
 
 func applyEdits(content string, input map[string]interface{}) (string, int, error) {

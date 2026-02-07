@@ -22,6 +22,7 @@ import (
 	"orchids-api/internal/loadbalancer"
 	"orchids-api/internal/orchids"
 	"orchids-api/internal/prompt"
+	"orchids-api/internal/store"
 	"orchids-api/internal/summarycache"
 	"orchids-api/internal/tokencache"
 	"orchids-api/internal/upstream"
@@ -93,19 +94,20 @@ func classifyUpstreamError(errStr string) upstreamErrorClass {
 	switch {
 	case strings.Contains(lower, "context canceled") || strings.Contains(lower, "canceled"):
 		return upstreamErrorClass{category: "canceled", retryable: false, switchAccount: false}
-	case strings.Contains(lower, "401") || strings.Contains(lower, "403") || strings.Contains(lower, "404") ||
+	case hasExplicitHTTPStatus(lower, "401") || hasExplicitHTTPStatus(lower, "403") || hasExplicitHTTPStatus(lower, "404") ||
 		strings.Contains(lower, "signed out") || strings.Contains(lower, "signed_out"):
 		return upstreamErrorClass{category: "auth", retryable: false, switchAccount: false}
-	case strings.Contains(lower, "input is too long") || strings.Contains(lower, "400"):
+	case strings.Contains(lower, "input is too long") || hasExplicitHTTPStatus(lower, "400"):
 		return upstreamErrorClass{category: "client", retryable: false, switchAccount: false}
-	case strings.Contains(lower, "429") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "rate limit"):
+	case hasExplicitHTTPStatus(lower, "429") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "rate limit"):
 		return upstreamErrorClass{category: "rate_limit", retryable: true, switchAccount: true}
 	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded") || strings.Contains(lower, "context deadline"):
 		return upstreamErrorClass{category: "timeout", retryable: true, switchAccount: true}
-	case strings.Contains(lower, "connection reset") || strings.Contains(lower, "connection refused") || strings.Contains(lower, "eof") ||
-		strings.Contains(lower, "network") || strings.Contains(lower, "broken pipe"):
+	case strings.Contains(lower, "connection reset") || strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "unexpected eof") || strings.Contains(lower, "use of closed") ||
+		strings.Contains(lower, "broken pipe"):
 		return upstreamErrorClass{category: "network", retryable: true, switchAccount: true}
-	case strings.Contains(lower, "500") || strings.Contains(lower, "502") || strings.Contains(lower, "503") || strings.Contains(lower, "504"):
+	case hasExplicitHTTPStatus(lower, "500") || hasExplicitHTTPStatus(lower, "502") || hasExplicitHTTPStatus(lower, "503") || hasExplicitHTTPStatus(lower, "504"):
 		return upstreamErrorClass{category: "server", retryable: true, switchAccount: true}
 	default:
 		return upstreamErrorClass{category: "unknown", retryable: true, switchAccount: true}
@@ -383,6 +385,13 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Debug("Checkpoint: selectAccount success")
 
+	// 捕获账号快照，用于请求结束后检测 forceRefreshToken 是否更新了账号信息
+	var accountSnapshot *store.Account
+	if currentAccount != nil {
+		snap := *currentAccount
+		accountSnapshot = &snap
+	}
+
 	isWarpRequest := strings.EqualFold(forcedChannel, "warp")
 	if currentAccount != nil && strings.EqualFold(currentAccount.AccountType, "warp") {
 		isWarpRequest = true
@@ -405,10 +414,17 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		slog.Info("系统提示已移除 cc_entrypoint", "mode", h.config.OrchidsCCEntrypointMode, "warp", isWarpRequest)
 	}
 
+	// 手动管理连接计数，账号切换时需要释放旧账号、获取新账号
+	trackedAccountID := int64(0)
 	if currentAccount != nil && h.loadBalancer != nil {
 		h.loadBalancer.AcquireConnection(currentAccount.ID)
-		defer h.loadBalancer.ReleaseConnection(currentAccount.ID)
+		trackedAccountID = currentAccount.ID
 	}
+	defer func() {
+		if trackedAccountID != 0 && h.loadBalancer != nil {
+			h.loadBalancer.ReleaseConnection(trackedAccountID)
+		}
+	}()
 
 	var hitsBefore, missesBefore uint64
 	if h.summaryStats != nil && h.summaryLog {
@@ -635,6 +651,10 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			ChatSessionID: chatSessionID,
 		}
 		for {
+			if retriesRemaining < maxRetries {
+				// 非首次尝试：向客户端发送重试提示，避免前一次不完整内容造成混淆
+				sh.emitTextBlock("\n\n[Retrying request...]\n\n")
+			}
 			sh.resetRoundState()
 			var err error
 			slog.Debug("Calling Upstream Client...", "attempt", maxRetries-retriesRemaining+1)
@@ -748,10 +768,18 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 				}
 				slog.Warn("Account request failed, switching account", "account", currentAccount.Name, "unsuccessful_attempts", len(failedAccountIDs))
 
+				// 释放旧账号的连接计数
+				if trackedAccountID != 0 {
+					h.loadBalancer.ReleaseConnection(trackedAccountID)
+					trackedAccountID = 0
+				}
+
 				var retryErr error
 				apiClient, currentAccount, retryErr = h.selectAccount(r.Context(), req.Model, forcedChannel, failedAccountIDs)
 				if retryErr == nil {
 					if currentAccount != nil {
+						h.loadBalancer.AcquireConnection(currentAccount.ID)
+						trackedAccountID = currentAccount.ID
 						slog.Debug("Switched to account", "account", currentAccount.Name)
 					} else {
 						slog.Debug("Switched to default upstream config")
@@ -832,7 +860,7 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync state and update stats using helpers
-	h.syncWarpState(currentAccount, apiClient)
+	h.syncWarpState(currentAccount, apiClient, accountSnapshot)
 	h.updateAccountStats(currentAccount, sh.inputTokens, sh.outputTokens)
 }
 
