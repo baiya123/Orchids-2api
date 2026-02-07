@@ -59,13 +59,6 @@
             <button class="btn btn-outline" onclick="document.getElementById('importFile').click()">📤 导入</button>
             <button class="btn btn-outline" onclick="exportAccounts()">📥 导出</button>
             <input type="file" id="importFile" accept=".json" style="display: none" onchange="importAccounts(event)" />
-            <button class="btn btn-outline" id="checkAllBtn" onclick="checkAllAccounts()">✅ 检测账号</button>
-            <label class="toggle"
-              style="gap: 10px; padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(148,163,184,0.2);">
-              <input type="checkbox" id="autoCheckToggle" onchange="toggleAutoCheck(this.checked)" />
-              <span class="toggle-slider"></span>
-              <span style="font-size: 0.85rem; color: #cbd5f5;">自动检测</span>
-            </label>
           </div>
           <div style="width: 1px; height: 24px; background: #e2e8f0; margin: 0 4px;"></div>
           <div style="display: flex; gap: 8px;">

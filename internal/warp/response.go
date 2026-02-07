@@ -100,6 +100,7 @@ type parsedEvent struct {
 	ReasoningDeltas []string
 	ToolCalls       []toolCall
 	Finish          *finishInfo
+	Error           string
 }
 
 type toolCall struct {
@@ -158,6 +159,18 @@ func parseResponseEvent(data []byte) (*parsedEvent, error) {
 				return out, err
 			}
 			parseStreamFinished(payload, out)
+		case 4: // error
+			if wire != 2 {
+				if err := d.skip(wire); err != nil {
+					return out, err
+				}
+				continue
+			}
+			payload, err := d.readBytes()
+			if err != nil {
+				return out, err
+			}
+			out.Error = parseStreamError(payload)
 		default:
 			if err := d.skip(wire); err != nil {
 				return out, err
@@ -596,4 +609,42 @@ func parseTokenUsage(data []byte) (int, int) {
 		}
 	}
 	return inputTokens, outputTokens
+}
+
+// parseStreamError extracts an error message from a protobuf error field.
+// It tries to read string fields (field 1 = message, field 2 = code).
+func parseStreamError(data []byte) string {
+	d := decoder{data: data}
+	errMsg := ""
+	errCode := ""
+	for !d.eof() {
+		field, wire, err := d.readKey()
+		if err != nil {
+			break
+		}
+		if wire == 2 {
+			payload, err := d.readBytes()
+			if err != nil {
+				break
+			}
+			switch field {
+			case 1:
+				errMsg = string(payload)
+			case 2:
+				errCode = string(payload)
+			}
+			continue
+		}
+		_ = d.skip(wire)
+	}
+	if errMsg == "" && errCode == "" {
+		return string(data)
+	}
+	if errCode != "" && errMsg != "" {
+		return errCode + ": " + errMsg
+	}
+	if errMsg != "" {
+		return errMsg
+	}
+	return errCode
 }

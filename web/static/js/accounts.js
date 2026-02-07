@@ -3,8 +3,6 @@
 let accounts = [];
 let currentPlatform = '';
 let accountHealth = {};
-let autoCheckTimer = null;
-let autoCheckRunning = false;
 let pageSize = 20;
 let currentPage = 1;
 
@@ -21,10 +19,7 @@ async function loadAccounts() {
     renderPlatformTabs();
     renderAccounts();
     updateStats();
-    const autoCheckEnabled = localStorage.getItem("autoCheckEnabled") === "true";
-    if (!autoCheckEnabled) {
-      autoRefreshWarpAccounts();
-    }
+    autoRefreshWarpAccounts();
   } catch (err) {
     console.error("Failed to load accounts:", err);
     showToast("加载账号失败", "error");
@@ -113,6 +108,23 @@ function statusBadge(acc) {
   if (!acc.enabled) {
     return { text: '禁用', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '账号已禁用' };
   }
+  // Check backend status_code
+  if (acc.status_code) {
+    switch (acc.status_code) {
+      case '429':
+        return { text: '限流', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '请求过于频繁 (429)' };
+      case 'quota_exceeded':
+        return { text: '配额超限', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽' };
+      case '401':
+        return { text: '未授权', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '认证失败 (401)' };
+      case '403':
+        return { text: '禁止访问', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '访问被拒绝 (403)' };
+      case '404':
+        return { text: '不存在', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '资源不存在 (404)' };
+      default:
+        return { text: '异常', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '状态异常: ' + acc.status_code };
+    }
+  }
   const type = normalizeAccountType(acc);
   if (type === 'warp') {
     if (!getAccountToken(acc)) {
@@ -144,42 +156,13 @@ async function checkAccount(id, silent = false) {
   }
 }
 
-// Check all accounts
-async function checkAllAccounts() {
-  if (autoCheckRunning) return;
-  if (!accounts.length) return;
-  autoCheckRunning = true;
-  showToast("开始检测账号状态", "info");
-  for (const acc of accounts) {
-    await checkAccount(acc.id, true);
-  }
-  showToast("账号检测完成", "success");
-  autoCheckRunning = false;
-}
-
 async function autoRefreshWarpAccounts() {
-  if (autoCheckRunning) return;
   const warpAccounts = accounts.filter(acc => normalizeAccountType(acc) === 'warp');
   if (!warpAccounts.length) return;
   for (const acc of warpAccounts) {
     if (acc.token) continue;
     await checkAccount(acc.id, true);
   }
-}
-
-// Toggle auto check
-function toggleAutoCheck(enabled) {
-  if (enabled) {
-    if (autoCheckTimer) clearInterval(autoCheckTimer);
-    autoCheckTimer = setInterval(checkAllAccounts, 10 * 60 * 1000);
-    checkAllAccounts();
-    showToast("已开启自动检测", "success");
-  } else {
-    if (autoCheckTimer) clearInterval(autoCheckTimer);
-    autoCheckTimer = null;
-    showToast("已关闭自动检测", "info");
-  }
-  localStorage.setItem("autoCheckEnabled", enabled ? "true" : "false");
 }
 
 // Delete all accounts
@@ -195,7 +178,7 @@ async function deleteAllAccounts() {
 
 // Clear abnormal accounts
 async function clearAbnormalAccounts() {
-  const abnormal = accounts.filter(a => !a.enabled);
+  const abnormal = accounts.filter(a => !a.enabled || a.status_code || (accountHealth[a.id] && !accountHealth[a.id].ok));
   if (abnormal.length === 0) {
     showToast("没有异常账号", "info");
     return;
@@ -518,7 +501,7 @@ function updatePageSize(size) {
 function updateStats() {
   const total = accounts.length;
   const enabled = accounts.filter((a) => a.enabled).length;
-  const abnormal = accounts.filter((a) => !a.enabled || (accountHealth[a.id] && !accountHealth[a.id].ok)).length;
+  const abnormal = accounts.filter((a) => !a.enabled || a.status_code || (accountHealth[a.id] && !accountHealth[a.id].ok)).length;
 
   document.getElementById("totalAccounts").textContent = total;
   document.getElementById("enabledAccounts").textContent = enabled;
@@ -761,12 +744,5 @@ document.addEventListener('DOMContentLoaded', () => {
   if (typeSelect) {
     typeSelect.addEventListener("change", () => applyTokenLabels(typeSelect.value));
     applyTokenLabels(typeSelect.value);
-  }
-
-  // Restore auto check setting
-  const autoCheckEnabled = localStorage.getItem("autoCheckEnabled") === "true";
-  if (autoCheckEnabled) {
-    document.getElementById("autoCheckToggle").checked = true;
-    toggleAutoCheck(true);
   }
 });

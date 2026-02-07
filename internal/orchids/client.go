@@ -106,7 +106,7 @@ func New(cfg *config.Config) *Client {
 	c := &Client{
 		config:     cfg,
 		httpClient: newHTTPClient(cfg),
-		fsCache:    perf.NewTTLCache(60 * time.Second),
+		fsCache:    perf.NewTTLCache(60*time.Second, 5000),
 	}
 	c.wsPool = upstream.NewWSPool(c.createWSConnection, 5, 20)
 	return c
@@ -162,7 +162,7 @@ func NewFromAccount(acc *store.Account, base *config.Config) *Client {
 		config:     cfg,
 		account:    acc,
 		httpClient: newHTTPClient(cfg),
-		fsCache:    perf.NewTTLCache(60 * time.Second),
+		fsCache:    perf.NewTTLCache(60*time.Second, 5000),
 	}
 	c.wsPool = upstream.NewWSPool(c.createWSConnection, 5, 20)
 	return c
@@ -492,6 +492,10 @@ func (c *Client) sendRequestSSE(ctx context.Context, req upstream.UpstreamReques
 	}
 
 done:
+	if state.errorMsg != "" {
+		return fmt.Errorf("orchids upstream error: %s", state.errorMsg)
+	}
+
 	if !state.finishSent {
 		finishReason := "stop"
 		if state.sawToolCall {

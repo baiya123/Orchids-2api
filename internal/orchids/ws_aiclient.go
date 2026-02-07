@@ -73,6 +73,7 @@ type requestState struct {
 	responseStarted   bool
 	suppressStarts    bool
 	activeWrites      map[string]*fileWriterState
+	errorMsg          string
 }
 
 type fileWriterState struct {
@@ -294,6 +295,10 @@ func (c *Client) sendRequestWSAIClient(ctx context.Context, req upstream.Upstrea
 		}
 	}
 
+	if state.errorMsg != "" {
+		return fmt.Errorf("orchids upstream error: %s", state.errorMsg)
+	}
+
 	if !state.finishSent {
 		finishReason := "stop"
 		if state.sawToolCall {
@@ -463,6 +468,46 @@ func (c *Client) handleOrchidsMessage(
 
 	case EventModel:
 		return c.handleModelEvent(msg, state, onMessage)
+
+	case "error":
+		errMsg := ""
+		errCode := ""
+		if data, ok := msg["data"].(map[string]interface{}); ok {
+			if m, ok := data["message"].(string); ok {
+				errMsg = m
+			}
+			if code, ok := data["code"].(string); ok {
+				errCode = code
+			}
+		}
+		if errMsg == "" {
+			if m, ok := msg["message"].(string); ok {
+				errMsg = m
+			}
+		}
+		if errCode == "" {
+			if code, ok := msg["code"].(string); ok {
+				errCode = code
+			}
+		}
+		if errMsg == "" {
+			errMsg = "unknown upstream error"
+		}
+		slog.Warn("Orchids upstream error event", "code", errCode, "message", errMsg)
+		if errCode != "" {
+			state.errorMsg = errCode + ": " + errMsg
+		} else {
+			state.errorMsg = errMsg
+		}
+		onMessage(upstream.SSEMessage{
+			Type: "error",
+			Event: map[string]interface{}{
+				"type":    "error",
+				"code":    errCode,
+				"message": errMsg,
+			},
+		})
+		return true // Break loop on error
 
 	// Suppressed events
 	case EventTodoWriteStart, EventRunItemStream, EventToolCallOutput:

@@ -18,11 +18,12 @@ type Cache interface {
 }
 
 type MemoryCache struct {
-	mu        sync.RWMutex
-	ttl       time.Duration
-	items     map[string]cacheItem
-	sizeBytes int64
-	done      chan struct{}
+	mu         sync.RWMutex
+	ttl        time.Duration
+	maxEntries int
+	items      map[string]cacheItem
+	sizeBytes  int64
+	done       chan struct{}
 }
 
 type cacheItem struct {
@@ -31,14 +32,19 @@ type cacheItem struct {
 	size      int64
 }
 
-func NewMemoryCache(ttl time.Duration) *MemoryCache {
+func NewMemoryCache(ttl time.Duration, maxEntries ...int) *MemoryCache {
 	if ttl < 0 {
 		ttl = 0
 	}
+	max := 0
+	if len(maxEntries) > 0 && maxEntries[0] > 0 {
+		max = maxEntries[0]
+	}
 	c := &MemoryCache{
-		ttl:   ttl,
-		items: make(map[string]cacheItem),
-		done:  make(chan struct{}),
+		ttl:        ttl,
+		maxEntries: max,
+		items:      make(map[string]cacheItem),
+		done:       make(chan struct{}),
 	}
 	// Start background cleanup
 	go c.cleanupLoop()
@@ -111,6 +117,8 @@ func (c *MemoryCache) Put(ctx context.Context, key string, tokens int) {
 	c.mu.Lock()
 	if existing, ok := c.items[key]; ok {
 		c.sizeBytes -= existing.size
+	} else if c.maxEntries > 0 && len(c.items) >= c.maxEntries {
+		c.evictOldestLocked()
 	}
 	c.items[key] = cacheItem{
 		tokens:    tokens,
@@ -119,6 +127,23 @@ func (c *MemoryCache) Put(ctx context.Context, key string, tokens int) {
 	}
 	c.sizeBytes += size
 	c.mu.Unlock()
+}
+
+func (c *MemoryCache) evictOldestLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for k, item := range c.items {
+		if first || item.expiresAt.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = item.expiresAt
+			first = false
+		}
+	}
+	if !first {
+		c.sizeBytes -= c.items[oldestKey].size
+		delete(c.items, oldestKey)
+	}
 }
 
 func (c *MemoryCache) GetStats(ctx context.Context) (int64, int64, error) {

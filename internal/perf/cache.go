@@ -12,17 +12,23 @@ type CacheItem struct {
 }
 
 type TTLCache struct {
-	items map[string]CacheItem
-	mu    sync.RWMutex
-	ttl   time.Duration
-	done  chan struct{}
+	items      map[string]CacheItem
+	mu         sync.RWMutex
+	ttl        time.Duration
+	maxEntries int
+	done       chan struct{}
 }
 
-func NewTTLCache(ttl time.Duration) *TTLCache {
+func NewTTLCache(ttl time.Duration, maxEntries ...int) *TTLCache {
+	max := 0
+	if len(maxEntries) > 0 && maxEntries[0] > 0 {
+		max = maxEntries[0]
+	}
 	c := &TTLCache{
-		items: make(map[string]CacheItem),
-		ttl:   ttl,
-		done:  make(chan struct{}),
+		items:      make(map[string]CacheItem),
+		ttl:        ttl,
+		maxEntries: max,
+		done:       make(chan struct{}),
 	}
 	go c.cleanupLoop()
 	return c
@@ -31,6 +37,9 @@ func NewTTLCache(ttl time.Duration) *TTLCache {
 func (c *TTLCache) Set(key string, value interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, ok := c.items[key]; !ok && c.maxEntries > 0 && len(c.items) >= c.maxEntries {
+		c.evictOldestLocked()
+	}
 	c.items[key] = CacheItem{
 		Value:      value,
 		Error:      "",
@@ -41,10 +50,29 @@ func (c *TTLCache) Set(key string, value interface{}) {
 func (c *TTLCache) SetError(key string, errMsg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, ok := c.items[key]; !ok && c.maxEntries > 0 && len(c.items) >= c.maxEntries {
+		c.evictOldestLocked()
+	}
 	c.items[key] = CacheItem{
 		Value:      nil,
 		Error:      errMsg,
 		Expiration: time.Now().Add(c.ttl).UnixNano(),
+	}
+}
+
+func (c *TTLCache) evictOldestLocked() {
+	var oldestKey string
+	var oldestExp int64
+	first := true
+	for k, item := range c.items {
+		if first || item.Expiration < oldestExp {
+			oldestKey = k
+			oldestExp = item.Expiration
+			first = false
+		}
+	}
+	if !first {
+		delete(c.items, oldestKey)
 	}
 }
 

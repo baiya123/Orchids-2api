@@ -22,6 +22,7 @@ import (
 	"orchids-api/internal/handler"
 	"orchids-api/internal/loadbalancer"
 	"orchids-api/internal/middleware"
+	"orchids-api/internal/orchids"
 	"orchids-api/internal/prompt"
 	"orchids-api/internal/store"
 	"orchids-api/internal/summarycache"
@@ -102,7 +103,7 @@ func main() {
 	apiHandler := api.New(s, cfg.AdminUser, cfg.AdminPass, cfg, resolvedCfgPath)
 	h := handler.NewWithLoadBalancer(cfg, lb)
 
-	tokenCache := tokencache.NewMemoryCache(time.Duration(cfg.CacheTTL) * time.Minute)
+	tokenCache := tokencache.NewMemoryCache(time.Duration(cfg.CacheTTL)*time.Minute, 10000)
 	h.SetTokenCache(tokenCache)
 	apiHandler.SetTokenCache(tokenCache)
 
@@ -350,6 +351,102 @@ func main() {
 				return
 			case <-ticker.C:
 				auth.CleanupExpiredSessions()
+			}
+		}
+	}()
+
+	// 上游模型同步
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				slog.Error("Panic in upstream model sync loop", "error", err)
+			}
+		}()
+
+		syncModels := func() {
+			accounts, err := s.GetEnabledAccounts(context.Background())
+			if err != nil {
+				slog.Warn("上游模型同步: 获取账号失败", "error", err)
+				return
+			}
+			// 找到第一个可用的 Orchids 账号来获取上游模型
+			var client *orchids.Client
+			for _, acc := range accounts {
+				if strings.EqualFold(acc.AccountType, "warp") {
+					continue
+				}
+				client = orchids.NewFromAccount(acc, cfg)
+				break
+			}
+			if client == nil {
+				// 没有 Orchids 账号，使用默认配置
+				client = orchids.New(cfg)
+			}
+
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			upstreamModels, err := client.FetchUpstreamModels(fetchCtx)
+			if err != nil {
+				slog.Warn("上游模型同步: 获取失败", "error", err)
+				return
+			}
+			if len(upstreamModels) == 0 {
+				slog.Debug("上游模型同步: 无模型返回")
+				return
+			}
+
+			added := 0
+			for _, um := range upstreamModels {
+				modelID := strings.TrimSpace(um.ID)
+				if modelID == "" {
+					continue
+				}
+				// 检查本地是否已存在
+				if _, err := s.GetModelByModelID(context.Background(), modelID); err == nil {
+					continue
+				}
+				// 新模型，添加到 store
+				channel := "Orchids"
+				if strings.TrimSpace(um.OwnedBy) != "" {
+					channel = um.OwnedBy
+				}
+				newModel := &store.Model{
+					Channel: channel,
+					ModelID: modelID,
+					Name:    modelID,
+					Status:  true,
+				}
+				if err := s.CreateModel(context.Background(), newModel); err != nil {
+					slog.Warn("上游模型同步: 创建模型失败", "model_id", modelID, "error", err)
+					continue
+				}
+				added++
+				slog.Info("上游模型同步: 新增模型", "model_id", modelID, "channel", channel)
+			}
+			if added > 0 {
+				slog.Info("上游模型同步完成", "total_upstream", len(upstreamModels), "added", added)
+			} else {
+				slog.Debug("上游模型同步完成，无新增", "total_upstream", len(upstreamModels))
+			}
+		}
+
+		// 启动时延迟 10 秒执行，等待 token 刷新完成
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Second):
+		}
+		syncModels()
+
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				syncModels()
 			}
 		}
 	}()

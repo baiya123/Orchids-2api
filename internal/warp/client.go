@@ -298,6 +298,10 @@ func (c *Client) SendRequestWithPayload(ctx context.Context, req upstream.Upstre
 			if parsed.ConversationID != "" {
 				onMessage(upstream.SSEMessage{Type: "model.conversation_id", Event: map[string]interface{}{"id": parsed.ConversationID}})
 			}
+			if parsed.Error != "" {
+				slog.Warn("Warp upstream error in stream", "error", parsed.Error)
+				return fmt.Errorf("warp stream error: %s", parsed.Error)
+			}
 			for _, delta := range parsed.TextDeltas {
 				onMessage(upstream.SSEMessage{Type: "model.text-delta", Event: map[string]interface{}{"delta": delta}})
 			}
