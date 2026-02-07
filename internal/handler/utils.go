@@ -9,7 +9,7 @@ import (
 	"orchids-api/internal/prompt"
 )
 
-var envWorkdirRegex = regexp.MustCompile(`Working directory:\s*([^\n\r]+)`)
+var envWorkdirRegex = regexp.MustCompile(`(?i)(?:primary\s+)?working directory:\s*([^\n\r]+)`)
 
 func extractWorkdirFromSystem(system []prompt.SystemItem) string {
 	for _, item := range system {

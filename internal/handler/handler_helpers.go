@@ -24,48 +24,19 @@ func (h *Handler) resolveWorkdir(r *http.Request, req ClaudeRequest, conversatio
 		h.sessionWorkdirsMu.RUnlock()
 	}
 
-	// Check for dynamic workdir header EARLY
-	dynamicWorkdir := r.Header.Get("X-Orchids-Workdir")
+	// Extract workdir from system prompt (Claude Code sends "Primary working directory: ...")
+	dynamicWorkdir := extractWorkdirFromSystem(req.System)
 	source := ""
 	if dynamicWorkdir != "" {
-		source = "header"
-	}
-	if dynamicWorkdir == "" {
-		dynamicWorkdir = r.Header.Get("X-Project-Root") // Try alternative
-		if dynamicWorkdir != "" {
-			source = "header"
-		}
-	}
-	if dynamicWorkdir == "" {
-		dynamicWorkdir = r.Header.Get("X-Working-Dir") // Try another alternative
-		if dynamicWorkdir != "" {
-			source = "header"
-		}
+		source = "system"
 	}
 
-	// FALLBACK: Check system prompt for <env>Working directory: ...</env>
-	if dynamicWorkdir == "" {
-		dynamicWorkdir = extractWorkdirFromSystem(req.System)
-		if dynamicWorkdir != "" {
-			source = "system"
-			slog.Info("Using workdir from system prompt env block", "workdir", dynamicWorkdir)
-		}
-	}
-
-	// FINAL FALLBACK: Check session persistence
+	// FALLBACK: Check session persistence
 	if dynamicWorkdir == "" {
 		if prevWorkdir != "" {
 			dynamicWorkdir = prevWorkdir
 			source = "session"
 			slog.Info("Recovered workdir from session", "workdir", dynamicWorkdir, "session", conversationKey)
-		}
-	}
-	// Fallback to config default if still empty
-	if dynamicWorkdir == "" && h != nil && h.config != nil {
-		if strings.TrimSpace(h.config.OrchidsLocalWorkdir) != "" {
-			dynamicWorkdir = h.config.OrchidsLocalWorkdir
-			source = "config"
-			slog.Info("Using workdir from config", "workdir", dynamicWorkdir)
 		}
 	}
 
