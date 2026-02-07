@@ -256,6 +256,22 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 				acc.ProjectID = info.ProjectID
 				acc.UserID = info.UserID
 				acc.Email = info.Email
+
+				// Sync Orchids credits on creation
+				creditsJWT := info.JWT
+				if creditsJWT == "" {
+					creditsJWT = acc.Token
+				}
+				if creditsJWT != "" {
+					creditsInfo, creditsErr := orchids.FetchCredits(r.Context(), creditsJWT)
+					if creditsErr != nil {
+						slog.Warn("Orchids credits sync failed on create", "error", creditsErr)
+					} else if creditsInfo != nil {
+						acc.Subscription = strings.ToLower(creditsInfo.Plan)
+						acc.UsageCurrent = creditsInfo.Credits
+						acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
+					}
+				}
 			}
 		}
 
@@ -328,27 +344,60 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 				}
 				acc.Token = jwt
 			} else {
+				existingToken := acc.Token // preserve before overwrite
 				info, err := clerk.FetchAccountInfo(acc.ClientCookie)
 				if err != nil {
-					http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				acc.SessionID = info.SessionID
-				acc.ClientUat = info.ClientUat
-				acc.ProjectID = info.ProjectID
-				acc.UserID = info.UserID
-				acc.Email = info.Email
-				acc.Token = info.JWT // Update Token/JWT
+					slog.Warn("Orchids refresh: clerk fetch failed, trying credits with existing token", "account_id", id, "error", err)
+					// Clerk failed but try to sync credits with existing session token
+					creditsJWT := existingToken
+					if creditsJWT == "" {
+						creditsJWT = acc.SessionCookie
+					}
+					if creditsJWT != "" {
+						creditsInfo, creditsErr := orchids.FetchCredits(r.Context(), creditsJWT)
+						if creditsErr != nil {
+							slog.Warn("Orchids credits sync also failed", "account_id", id, "error", creditsErr)
+							http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
+							return
+						}
+						if creditsInfo != nil {
+							slog.Info("Orchids credits synced via fallback", "account_id", id, "credits", creditsInfo.Credits, "plan", creditsInfo.Plan)
+							acc.Subscription = strings.ToLower(creditsInfo.Plan)
+							acc.UsageCurrent = creditsInfo.Credits
+							acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
+						}
+					} else {
+						http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
+						return
+					}
+				} else {
+					slog.Info("Orchids refresh: clerk info", "account_id", id, "has_jwt", info.JWT != "", "has_existing_token", existingToken != "", "email", info.Email)
+					acc.SessionID = info.SessionID
+					acc.ClientUat = info.ClientUat
+					acc.ProjectID = info.ProjectID
+					acc.UserID = info.UserID
+					acc.Email = info.Email
+					acc.Token = info.JWT // Update Token/JWT
 
-				// Sync Orchids credits
-				if info.JWT != "" {
-					creditsInfo, creditsErr := orchids.FetchCredits(r.Context(), info.JWT)
-					if creditsErr != nil {
-						slog.Warn("Orchids credits sync failed on refresh", "account", acc.Name, "error", creditsErr)
-					} else if creditsInfo != nil {
-						acc.Subscription = strings.ToLower(creditsInfo.Plan)
-						acc.UsageCurrent = creditsInfo.Credits
-						acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
+					// Sync Orchids credits — try info.JWT first, fallback to existing token
+					creditsJWT := info.JWT
+					if creditsJWT == "" {
+						creditsJWT = existingToken
+					}
+					if creditsJWT != "" {
+						creditsInfo, creditsErr := orchids.FetchCredits(r.Context(), creditsJWT)
+						if creditsErr != nil {
+							slog.Warn("Orchids credits sync failed on refresh", "account_id", id, "error", creditsErr)
+						} else if creditsInfo != nil {
+							slog.Info("Orchids credits synced", "account_id", id, "credits", creditsInfo.Credits, "plan", creditsInfo.Plan, "limit", orchids.PlanCreditLimit(creditsInfo.Plan))
+							acc.Subscription = strings.ToLower(creditsInfo.Plan)
+							acc.UsageCurrent = creditsInfo.Credits
+							acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
+						} else {
+							slog.Warn("Orchids credits: creditsInfo is nil", "account_id", id)
+						}
+					} else {
+						slog.Warn("Orchids credits: no JWT available", "account_id", id)
 					}
 				}
 			}

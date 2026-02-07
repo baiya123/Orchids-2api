@@ -45,7 +45,11 @@
       "Bash(tee:*)",
       "mcp__sequential-thinking__sequentialthinking",
       "Bash(staticcheck:*)",
-      "Bash(deadcode:*)"
+      "Bash(deadcode:*)",
+      "mcp__fetch__fetch",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); text=data[0][''text'']; \nimport re\nmatches = re.findall\\(r''createServerReference\\\\\\([^\\)]+\\\\\\)'', text\\)\nfor m in matches:\n    print\\(m\\)\n    print\\(''---''\\)\n\")",
+      "Bash(python3 -c \"\nimport sys, json, re\ndata = json.load\\(sys.stdin\\)\ntext = data[0][''text'']\n# Search for createServerReference with a wider pattern\nmatches = re.findall\\(r''createServerReference\\\\\\(.{20,120}?\\\\\\)'', text\\)\nfor m in matches:\n    print\\(m\\)\n    print\\(''---''\\)\n\")",
+      "Bash(python3 -c \"\nimport sys, json, re\ndata = json.load\\(sys.stdin\\)\ntext = data[0][''text'']\nmatches = re.findall\\(r''createServerReference\\\\\\(.{20,120}?\\\\\\)'', text\\)\nfor m in matches:\n    print\\(m\\)\n    print\\(''---''\\)\n\")"
     ]
   }
 }

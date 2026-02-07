@@ -133,8 +133,8 @@ function statusBadge(acc) {
   } else if (!acc.session_id && !acc.session_cookie) {
     return { text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少会话信息' };
   }
-  if (acc.usage_limit > 0 && (acc.usage_current || 0) >= acc.usage_limit) {
-    return { text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (' + Math.floor(acc.usage_current) + '/' + Math.floor(acc.usage_limit) + ')' };
+  if (acc.usage_limit > 0 && (acc.usage_current || 0) <= 0) {
+    return { text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (剩余 0 / ' + Math.floor(acc.usage_limit) + ')' };
   }
   return { text: '正常', color: '#34d399', bg: 'rgba(52, 211, 153, 0.16)', tip: '状态正常' };
 }
@@ -263,6 +263,7 @@ function renderAccounts() {
     { label: "Token" },
     { label: "模型" },
     { label: "今日用量", style: "width: 100px;" },
+    { label: "配额", style: "width: 140px;" },
     { label: "状态" },
     { label: "调用" },
     { label: "最后调用" },
@@ -330,6 +331,20 @@ function renderAccounts() {
     tdUsage.style.color = "#94a3b8";
     tdUsage.textContent = usageCurrent.toFixed(2);
     tr.appendChild(tdUsage);
+
+    const tdQuota = document.createElement("td");
+    tdQuota.style.fontSize = "0.85rem";
+    if (acc.usage_limit > 0) {
+      const remaining = Math.floor(acc.usage_current || 0);
+      const limit = Math.floor(acc.usage_limit);
+      const pct = Math.min(100, Math.round(((limit - remaining) / limit) * 100));
+      const color = pct >= 90 ? "#fb7185" : pct >= 70 ? "#f59e0b" : "#34d399";
+      tdQuota.innerHTML = `<span style="color:${color}">${remaining.toLocaleString()} / ${limit.toLocaleString()}</span> <span style="color:#64748b;font-size:0.75rem">(${pct}%)</span>`;
+    } else {
+      tdQuota.style.color = "#64748b";
+      tdQuota.textContent = "-";
+    }
+    tr.appendChild(tdQuota);
 
     const tdStatus = document.createElement("td");
     const statusSpan = document.createElement("span");
