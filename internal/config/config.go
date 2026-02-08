@@ -73,7 +73,6 @@ type Config struct {
 	Retry429Interval     int    `json:"retry_429_interval"`
 	TokenRefreshInterval int    `json:"token_refresh_interval"`
 	AutoRefreshToken     bool   `json:"auto_refresh_token"`
-	AutoRefreshUsage     bool   `json:"auto_refresh_usage"`
 	OutputTokenCount     bool   `json:"output_token_count"`
 	CacheTokenCount      bool   `json:"cache_token_count"`
 	CacheTTL             int    `json:"cache_ttl"`

@@ -52,7 +52,6 @@
   "retry_429_interval": 60,
   "token_refresh_interval": 30,
   "auto_refresh_token": true,
-  "auto_refresh_usage": false,
   "output_token_count": false,
   "cache_token_count": false,
   "cache_ttl": 5,

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,16 +35,15 @@ func NewFromAccount(acc *store.Account, cfg *config.Config) *Client {
 	}
 	sess := getSession(acc.ID, refresh)
 
-	// Inject JWT token if available and session is empty
+	// Inject JWT token if available, valid, and session is empty
 	if acc != nil && acc.Token != "" {
 		if sess.currentJWT() == "" {
-			sess.mu.Lock()
-			sess.jwt = acc.Token
-			if sess.expiresAt.IsZero() {
-				// We don't know the exact expiry, so set a conservative default
-				sess.expiresAt = time.Now().Add(1 * time.Hour)
+			if exp := jwtExpiry(acc.Token); !exp.IsZero() && time.Now().Add(20*time.Minute).Before(exp) {
+				sess.mu.Lock()
+				sess.jwt = acc.Token
+				sess.expiresAt = exp
+				sess.mu.Unlock()
 			}
-			sess.mu.Unlock()
 		}
 	}
 
@@ -405,7 +405,7 @@ func (c *Client) RefreshAccount(ctx context.Context) (string, error) {
 	} else if c.account != nil {
 		cid = fmt.Sprintf("warp-%d", c.account.ID)
 	}
-	if err := c.session.refreshTokenRequest(ctx, c.httpClient, cid); err != nil {
+	if err := c.session.ensureToken(ctx, c.httpClient, cid); err != nil {
 		return "", err
 	}
 	jwt := c.session.currentJWT()
@@ -433,6 +433,34 @@ func (c *Client) SyncAccountState() bool {
 		changed = true
 	}
 	return changed
+}
+
+// jwtExpiry parses the exp claim from a JWT token and returns the expiry time.
+func jwtExpiry(token string) time.Time {
+	firstDot := strings.IndexByte(token, '.')
+	if firstDot < 0 {
+		return time.Time{}
+	}
+	rest := token[firstDot+1:]
+	secondDot := strings.IndexByte(rest, '.')
+	if secondDot < 0 {
+		return time.Time{}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(rest[:secondDot])
+	if err != nil {
+		return time.Time{}
+	}
+	var claims struct {
+		Exp json.Number `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return time.Time{}
+	}
+	exp, err := claims.Exp.Int64()
+	if err != nil || exp <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(exp, 0)
 }
 
 func (c *Client) LogSessionState() {

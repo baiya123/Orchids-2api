@@ -34,5 +34,4 @@ type ConfigData struct {
 	RequestTimeout       int
 	TokenRefreshInterval int
 	AutoRefreshToken     bool
-	AutoRefreshUsage     bool
 }

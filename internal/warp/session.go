@@ -169,8 +169,9 @@ func (s *session) refreshTokenRequest(ctx context.Context, httpClient *http.Clie
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		slog.Warn("Warp AI: Refresh failed", "cid", cid, "status", resp.StatusCode, "body", string(body))
-		return fmt.Errorf("warp refresh token failed: HTTP %d", resp.StatusCode)
+		retryAfter := parseRetryAfterHeader(resp.Header.Get("Retry-After"), time.Now())
+		slog.Warn("Warp AI: Refresh failed", "cid", cid, "status", resp.StatusCode, "retry_after", retryAfter.String(), "body", string(body))
+		return &HTTPStatusError{Operation: "refresh token", StatusCode: resp.StatusCode, RetryAfter: retryAfter}
 	}
 
 	var parsed refreshResponse
@@ -334,4 +335,13 @@ func (s *session) currentRefreshToken() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.refreshToken
+}
+
+// InvalidateSession 清除指定账号的 session 缓存，使下次请求重新创建会话。
+func InvalidateSession(accountID int64) {
+	if accountID <= 0 {
+		return
+	}
+	key := fmt.Sprintf("warp:%d", accountID)
+	sessionCache.Delete(key)
 }

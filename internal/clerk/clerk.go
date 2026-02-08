@@ -85,6 +85,16 @@ func FetchAccountInfoWithProject(clientCookie string, customProjectID string) (*
 		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Clerk 可能通过 Set-Cookie 轮转 __client cookie（rotating_token），
+	// 必须捕获新值，否则旧 token 被消费后后续请求全部失效。
+	effectiveCookie := clientCookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "__client" && strings.TrimSpace(c.Value) != "" {
+			effectiveCookie = c.Value
+			break
+		}
+	}
+
 	var clientResp ClientResponse
 	if err := json.NewDecoder(resp.Body).Decode(&clientResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
@@ -106,7 +116,7 @@ func FetchAccountInfoWithProject(clientCookie string, customProjectID string) (*
 
 	return &AccountInfo{
 		SessionID:    clientResp.Response.LastActiveSessionID,
-		ClientCookie: clientCookie,
+		ClientCookie: effectiveCookie,
 		ClientUat:    fmt.Sprintf("%d", time.Now().Unix()),
 		ProjectID:    projectID,
 		UserID:       session.User.ID,

@@ -16,7 +16,6 @@ import (
 	"orchids-api/internal/auth"
 	"orchids-api/internal/clerk"
 	"orchids-api/internal/config"
-	"orchids-api/internal/orchids"
 	"orchids-api/internal/prompt"
 	"orchids-api/internal/store"
 	"orchids-api/internal/tokencache"
@@ -256,31 +255,8 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 				acc.ProjectID = info.ProjectID
 				acc.UserID = info.UserID
 				acc.Email = info.Email
-
-				// Sync Orchids credits on creation
-				creditsJWT := info.JWT
-				if creditsJWT == "" {
-					creditsJWT = acc.Token
-				}
-				if creditsJWT != "" {
-					creditsInfo, creditsErr := orchids.FetchCreditsWithAuth(r.Context(), orchids.CreditsAuth{
-						SessionJWT: creditsJWT,
-						ClientJWT:  acc.ClientCookie,
-						ClientUat:  acc.ClientUat,
-						SessionID:  acc.SessionID,
-						UserID:     acc.UserID,
-					})
-					if creditsErr != nil {
-						if orchids.IsCreditsSoftError(creditsErr) {
-							slog.Debug("Orchids credits sync skipped on create, keep previous usage", "error", creditsErr)
-						} else {
-							slog.Warn("Orchids credits sync failed on create", "error", creditsErr)
-						}
-					} else if creditsInfo != nil {
-						acc.Subscription = strings.ToLower(creditsInfo.Plan)
-						acc.UsageCurrent = creditsInfo.Credits
-						acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
-					}
+				if info.ClientCookie != "" {
+					acc.ClientCookie = info.ClientCookie
 				}
 			}
 		}
@@ -349,85 +325,30 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 				warpClient := warp.NewFromAccount(acc, cfg)
 				jwt, err := warpClient.RefreshAccount(r.Context())
 				if err != nil {
-					http.Error(w, "Failed to refresh warp account: "+err.Error(), http.StatusBadRequest)
+					status := http.StatusBadRequest
+					if code := warp.HTTPStatusCode(err); code >= 400 {
+						status = code
+					}
+					http.Error(w, "Failed to refresh warp account: "+err.Error(), status)
 					return
 				}
 				acc.Token = jwt
+				warpClient.SyncAccountState()
 			} else {
-				existingToken := acc.Token // preserve before overwrite
 				info, err := clerk.FetchAccountInfo(acc.ClientCookie)
 				if err != nil {
-					slog.Warn("Orchids refresh: clerk fetch failed, trying credits with existing token", "account_id", id, "error", err)
-					// Clerk failed but try to sync credits with existing session token
-					creditsJWT := existingToken
-					if creditsJWT == "" {
-						creditsJWT = acc.SessionCookie
-					}
-					if creditsJWT != "" {
-						creditsInfo, creditsErr := orchids.FetchCreditsWithAuth(r.Context(), orchids.CreditsAuth{
-							SessionJWT: creditsJWT,
-							ClientJWT:  acc.ClientCookie,
-							ClientUat:  acc.ClientUat,
-							SessionID:  acc.SessionID,
-							UserID:     acc.UserID,
-						})
-						if creditsErr != nil {
-							if orchids.IsCreditsSoftError(creditsErr) {
-								slog.Debug("Orchids credits fallback skipped on refresh, keep previous usage", "account_id", id, "error", creditsErr)
-							} else {
-								slog.Warn("Orchids credits sync also failed", "account_id", id, "error", creditsErr)
-								http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
-								return
-							}
-						}
-						if creditsInfo != nil {
-							slog.Info("Orchids credits synced via fallback", "account_id", id, "credits", creditsInfo.Credits, "plan", creditsInfo.Plan)
-							acc.Subscription = strings.ToLower(creditsInfo.Plan)
-							acc.UsageCurrent = creditsInfo.Credits
-							acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
-						}
-					} else {
-						http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
-						return
-					}
+					http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
+					return
 				} else {
-					slog.Info("Orchids refresh: clerk info", "account_id", id, "has_jwt", info.JWT != "", "has_existing_token", existingToken != "", "email", info.Email)
+					slog.Info("Orchids refresh: clerk info", "account_id", id, "has_jwt", info.JWT != "", "email", info.Email)
 					acc.SessionID = info.SessionID
 					acc.ClientUat = info.ClientUat
 					acc.ProjectID = info.ProjectID
 					acc.UserID = info.UserID
 					acc.Email = info.Email
 					acc.Token = info.JWT // Update Token/JWT
-
-					// Sync Orchids credits — try info.JWT first, fallback to existing token
-					creditsJWT := info.JWT
-					if creditsJWT == "" {
-						creditsJWT = existingToken
-					}
-					if creditsJWT != "" {
-						creditsInfo, creditsErr := orchids.FetchCreditsWithAuth(r.Context(), orchids.CreditsAuth{
-							SessionJWT: creditsJWT,
-							ClientJWT:  acc.ClientCookie,
-							ClientUat:  acc.ClientUat,
-							SessionID:  acc.SessionID,
-							UserID:     acc.UserID,
-						})
-						if creditsErr != nil {
-							if orchids.IsCreditsSoftError(creditsErr) {
-								slog.Debug("Orchids credits sync skipped on refresh, keep previous usage", "account_id", id, "error", creditsErr)
-							} else {
-								slog.Warn("Orchids credits sync failed on refresh", "account_id", id, "error", creditsErr)
-							}
-						} else if creditsInfo != nil {
-							slog.Info("Orchids credits synced", "account_id", id, "credits", creditsInfo.Credits, "plan", creditsInfo.Plan, "limit", orchids.PlanCreditLimit(creditsInfo.Plan))
-							acc.Subscription = strings.ToLower(creditsInfo.Plan)
-							acc.UsageCurrent = creditsInfo.Credits
-							acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
-						} else {
-							slog.Warn("Orchids credits: creditsInfo is nil", "account_id", id)
-						}
-					} else {
-						slog.Warn("Orchids credits: no JWT available", "account_id", id)
+					if info.ClientCookie != "" {
+						acc.ClientCookie = info.ClientCookie
 					}
 				}
 			}

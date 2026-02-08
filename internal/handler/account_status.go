@@ -12,8 +12,6 @@ import (
 func classifyAccountStatus(errStr string) string {
 	lower := strings.ToLower(errStr)
 	switch {
-	case strings.Contains(lower, "quota_exceeded") || strings.Contains(lower, "quota exceeded") || strings.Contains(lower, "quota"):
-		return "quota_exceeded"
 	case hasExplicitHTTPStatus(lower, "401") || strings.Contains(lower, "signed out") || strings.Contains(lower, "signed_out") || strings.Contains(lower, "unauthorized"):
 		return "401"
 	case hasExplicitHTTPStatus(lower, "403") || strings.Contains(lower, "forbidden"):
@@ -69,24 +67,10 @@ func markAccountStatus(ctx context.Context, store *store.Store, acc *store.Accou
 
 	acc.StatusCode = status
 	acc.LastAttempt = now
-	if status == "quota_exceeded" {
-		acc.QuotaResetAt = nextMonthStart(now)
-	}
 
 	if err := store.UpdateAccount(ctx, acc); err != nil {
 		slog.Warn("账号状态更新失败", "account_id", acc.ID, "status", status, "error", err)
 		return
 	}
 	slog.Info("账号状态已标记", "account_id", acc.ID, "status", status)
-}
-
-// nextMonthStart 与 loadbalancer 包中的同名函数重复，
-// 但因跨包无法直接共享，保留各自副本。
-func nextMonthStart(now time.Time) time.Time {
-	year, month, _ := now.Date()
-	loc := now.Location()
-	if month == time.December {
-		return time.Date(year+1, time.January, 1, 0, 0, 0, 0, loc)
-	}
-	return time.Date(year, month+1, 1, 0, 0, 0, 0, loc)
 }

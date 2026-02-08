@@ -38,10 +38,11 @@ type UsageMetadata struct {
 }
 
 // ModelSpec holds cost/quality/speed ratings for a model choice.
+// Values may be strings ("low","high") or numbers from the API.
 type ModelSpec struct {
-	Cost    string `json:"cost"`
-	Quality string `json:"quality"`
-	Speed   string `json:"speed"`
+	Cost    interface{} `json:"cost"`
+	Quality interface{} `json:"quality"`
+	Speed   interface{} `json:"speed"`
 }
 
 // ModelChoice represents a single model option within a feature category.

@@ -13,6 +13,7 @@ import (
 	"orchids-api/internal/auth"
 	"orchids-api/internal/orchids"
 	"orchids-api/internal/store"
+	"orchids-api/internal/warp"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -237,19 +238,6 @@ func (lb *LoadBalancer) isAccountAvailable(ctx context.Context, acc *store.Accou
 
 	now := time.Now()
 	switch status {
-	case "quota_exceeded":
-		resetAt := acc.QuotaResetAt
-		if resetAt.IsZero() {
-			resetAt = nextMonthStart(now)
-			acc.QuotaResetAt = resetAt
-			lb.persistAccountStatus(ctx, acc, "记录配额重置时间")
-			return false
-		}
-		if now.After(resetAt) {
-			lb.clearAccountStatus(ctx, acc, "配额到期，自动恢复")
-			return true
-		}
-		return false
 	case "401":
 		// 401 表示 token 过期或会话失效，短时间冷却后自动恢复尝试
 		if acc.LastAttempt.IsZero() {
@@ -280,10 +268,27 @@ func (lb *LoadBalancer) clearAccountStatus(ctx context.Context, acc *store.Accou
 	if acc.SessionID != "" {
 		orchids.InvalidateCachedToken(acc.SessionID)
 	}
+	// 清除 warp session 缓存，确保恢复后使用新 token
+	if strings.EqualFold(acc.AccountType, "warp") && acc.ID > 0 {
+		warp.InvalidateSession(acc.ID)
+	}
 	acc.StatusCode = ""
 	acc.LastAttempt = time.Time{}
 	acc.QuotaResetAt = time.Time{}
 	lb.persistAccountStatus(ctx, acc, reason)
+}
+
+// MarkAccountStatus 标记账号状态（供后台刷新等外部调用使用）。
+func (lb *LoadBalancer) MarkAccountStatus(ctx context.Context, acc *store.Account, status string) {
+	if acc == nil || lb.Store == nil || status == "" {
+		return
+	}
+	if acc.StatusCode == status {
+		return
+	}
+	acc.StatusCode = status
+	acc.LastAttempt = time.Now()
+	lb.persistAccountStatus(ctx, acc, "后台刷新失败: "+status)
 }
 
 func (lb *LoadBalancer) persistAccountStatus(ctx context.Context, acc *store.Account, reason string) {
@@ -295,13 +300,4 @@ func (lb *LoadBalancer) persistAccountStatus(ctx context.Context, acc *store.Acc
 		return
 	}
 	slog.Info("账号状态已更新", "account_id", acc.ID, "status", acc.StatusCode, "reason", reason)
-}
-
-func nextMonthStart(now time.Time) time.Time {
-	year, month, _ := now.Date()
-	loc := now.Location()
-	if month == time.December {
-		return time.Date(year+1, time.January, 1, 0, 0, 0, 0, loc)
-	}
-	return time.Date(year, month+1, 1, 0, 0, 0, 0, loc)
 }

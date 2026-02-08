@@ -77,6 +77,29 @@ var tokenCache = struct {
 	items: map[string]cachedToken{},
 }
 
+var noActiveSessionLogState = struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}{
+	last: map[string]time.Time{},
+}
+
+const noActiveSessionLogInterval = 5 * time.Minute
+
+func shouldLogNoActiveSession(key string) bool {
+	if strings.TrimSpace(key) == "" {
+		key = "default"
+	}
+	now := time.Now()
+	noActiveSessionLogState.mu.Lock()
+	defer noActiveSessionLogState.mu.Unlock()
+	if t, ok := noActiveSessionLogState.last[key]; ok && now.Sub(t) < noActiveSessionLogInterval {
+		return false
+	}
+	noActiveSessionLogState.last[key] = now
+	return true
+}
+
 func newHTTPClient(cfg *config.Config) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -197,7 +220,30 @@ func (c *Client) forceRefreshToken() (string, error) {
 			setCachedToken(c.config.SessionID, info.JWT)
 			return info.JWT, nil
 		}
-		slog.Warn("Clerk token 刷新失败，尝试 session token", "error", err)
+		if err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "no active sessions found") {
+				logKey := "default"
+				accountID := int64(0)
+				email := strings.TrimSpace(c.config.Email)
+				hasSessionID := strings.TrimSpace(c.config.SessionID) != ""
+				if c.account != nil {
+					accountID = c.account.ID
+					if strings.TrimSpace(c.account.Email) != "" {
+						email = strings.TrimSpace(c.account.Email)
+					}
+					hasSessionID = strings.TrimSpace(c.account.SessionID) != ""
+					logKey = fmt.Sprintf("acct:%d", accountID)
+				}
+				if shouldLogNoActiveSession(logKey) {
+					slog.Warn("Clerk token 刷新未命中 active session，回退 session token", "account_id", accountID, "email", email, "has_session_id", hasSessionID, "error", err)
+				}
+			} else {
+				slog.Warn("Clerk token 刷新失败，尝试 session token", "error", err)
+			}
+		} else {
+			slog.Debug("Clerk token 刷新未返回 JWT，尝试 session token")
+		}
 	}
 
 	return c.fetchToken()
@@ -265,6 +311,9 @@ func (c *Client) applyAccountInfo(info *clerk.AccountInfo) {
 	if strings.TrimSpace(info.Email) != "" {
 		c.config.Email = info.Email
 	}
+	if strings.TrimSpace(info.ClientCookie) != "" {
+		c.config.ClientCookie = info.ClientCookie
+	}
 }
 
 // persistAccountInfo 将刷新后的账号信息同步回 store，防止重启后丢失。
@@ -287,6 +336,9 @@ func (c *Client) persistAccountInfo(info *clerk.AccountInfo) {
 	if strings.TrimSpace(info.Email) != "" {
 		c.account.Email = info.Email
 	}
+	if strings.TrimSpace(info.ClientCookie) != "" {
+		c.account.ClientCookie = info.ClientCookie
+	}
 }
 
 // SyncAccountState 检查 forceRefreshToken 是否更新了账号信息，返回是否有实际变更。
@@ -299,7 +351,8 @@ func (c *Client) SyncAccountState(snapshot *store.Account) bool {
 		c.account.ClientUat != snapshot.ClientUat ||
 		c.account.ProjectID != snapshot.ProjectID ||
 		c.account.UserID != snapshot.UserID ||
-		c.account.Email != snapshot.Email
+		c.account.Email != snapshot.Email ||
+		c.account.ClientCookie != snapshot.ClientCookie
 }
 
 func (c *Client) SendRequest(ctx context.Context, prompt string, chatHistory []interface{}, model string, onMessage func(upstream.SSEMessage), logger *debug.Logger) error {

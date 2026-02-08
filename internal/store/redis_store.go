@@ -315,7 +315,16 @@ func (s *redisStore) IncrementAccountStats(ctx context.Context, id int64, usage 
 			acc.reset_date = today
 		end
 
-		acc.usage_current = (acc.usage_current or 0) + usage
+		local acc_type = ""
+		if acc.account_type ~= nil then
+			acc_type = string.lower(tostring(acc.account_type))
+		end
+
+		-- Warp 的 usage_current 保存请求配额（由上游同步），
+		-- 不能叠加 token 用量，否则会污染配额显示。
+		if acc_type ~= "warp" then
+			acc.usage_current = (acc.usage_current or 0) + usage
+		end
 		acc.usage_total = (acc.usage_total or 0) + usage
 		acc.usage_daily = (acc.usage_daily or 0) + usage
 		acc.request_count = (acc.request_count or 0) + count

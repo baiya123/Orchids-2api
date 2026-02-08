@@ -870,7 +870,37 @@ func (h *streamHandler) forceFinishIfMissing() {
 	hasToolCalls := h.toolCallCount > 0 ||
 		len(h.pendingToolCalls) > 0 ||
 		len(h.toolCallEmitted) > 0
+	hasOutput := h.outputBuilder.Len() > 0 || h.responseText.Len() > 0 || len(h.contentBlocks) > 0
 	h.mu.Unlock()
+
+	// 上游无任何有效输出时，注入空响应提示避免客户端收到完全空的回复
+	if !hasToolCalls && !hasOutput {
+		slog.Warn("上游未返回有效内容，注入空响应提示")
+		h.ensureBlock("text")
+		h.mu.Lock()
+		internalIdx := h.activeTextBlockIndex
+		h.mu.Unlock()
+
+		emptyMsg := "No response from upstream. The request may not be supported in this mode."
+		if h.isStream {
+			deltaMap := map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": h.activeTextSSEIndex,
+				"delta": map[string]interface{}{
+					"type": "text_delta",
+					"text": emptyMsg,
+				},
+			}
+			deltaData, _ := json.Marshal(deltaMap)
+			h.writeSSE("content_block_delta", string(deltaData))
+		} else {
+			h.responseText.WriteString(emptyMsg)
+			if builder, ok := h.textBlockBuilders[internalIdx]; ok {
+				builder.WriteString(emptyMsg)
+			}
+		}
+	}
+
 	stopReason := "end_turn"
 	if hasToolCalls {
 		stopReason = "tool_use"

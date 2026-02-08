@@ -94,9 +94,13 @@ func classifyUpstreamError(errStr string) upstreamErrorClass {
 	switch {
 	case strings.Contains(lower, "context canceled") || strings.Contains(lower, "canceled"):
 		return upstreamErrorClass{category: "canceled", retryable: false, switchAccount: false}
-	case hasExplicitHTTPStatus(lower, "401") || hasExplicitHTTPStatus(lower, "403") || hasExplicitHTTPStatus(lower, "404") ||
+	case hasExplicitHTTPStatus(lower, "401") ||
 		strings.Contains(lower, "signed out") || strings.Contains(lower, "signed_out"):
-		return upstreamErrorClass{category: "auth", retryable: false, switchAccount: false}
+		return upstreamErrorClass{category: "auth", retryable: true, switchAccount: true}
+	case hasExplicitHTTPStatus(lower, "403"):
+		return upstreamErrorClass{category: "auth_blocked", retryable: true, switchAccount: true}
+	case hasExplicitHTTPStatus(lower, "404"):
+		return upstreamErrorClass{category: "auth_blocked", retryable: false, switchAccount: false}
 	case strings.Contains(lower, "input is too long") || hasExplicitHTTPStatus(lower, "400"):
 		return upstreamErrorClass{category: "client", retryable: false, switchAccount: false}
 	case hasExplicitHTTPStatus(lower, "429") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "rate limit"):
@@ -705,47 +709,71 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			errStr := err.Error()
 			errClass := classifyUpstreamError(errStr)
 			slog.Error("Request error", "error", err, "category", errClass.category, "retryable", errClass.retryable)
-			if currentAccount != nil && h.loadBalancer != nil && h.loadBalancer.Store != nil && !errClass.retryable {
+			// 标记账号状态（auth 类错误始终标记，无论是否可重试）
+			if currentAccount != nil && h.loadBalancer != nil && h.loadBalancer.Store != nil {
 				if status := classifyAccountStatus(errStr); status != "" {
-					slog.Info("标记账号状态（非重试类错误）", "account_id", currentAccount.ID, "status", status, "category", errClass.category)
-					markAccountStatus(r.Context(), h.loadBalancer.Store, currentAccount, status)
+					if !errClass.retryable || errClass.category == "auth" {
+						slog.Info("标记账号状态", "account_id", currentAccount.ID, "status", status, "category", errClass.category)
+						markAccountStatus(r.Context(), h.loadBalancer.Store, currentAccount, status)
+					}
 				}
 			}
-			if !errClass.retryable {
-				slog.Error("Aborting retries for non-retriable error", "error", err, "category", errClass.category)
 
-				if errClass.category == "auth" {
-					errorMsg := fmt.Sprintf("Warp Request Failed: %s. Please check your account status.", errStr)
-					if strings.Contains(errStr, "401") {
-						errorMsg = "Authentication Error: Session expired (401). Please update your account credentials."
-					} else if strings.Contains(errStr, "403") {
-						errorMsg = "Access Forbidden (403): Your account might be flagged or blocked by Warp's firewall. Try re-enabling it in the Admin UI."
+			// injectAuthError 向客户端注入认证错误消息
+			injectErrorText := func(logMsg, errorMsg string) {
+				slog.Info(logMsg, "error_msg", errorMsg, "is_stream", sh.isStream)
+				idx := sh.ensureBlock("text")
+				internalIdx := sh.activeTextBlockIndex
+
+				if sh.isStream {
+					deltaMap := map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": idx,
+						"delta": map[string]interface{}{
+							"type": "text_delta",
+							"text": errorMsg,
+						},
 					}
-
-					slog.Info("Injecting auth error to client", "error_msg", errorMsg, "is_stream", sh.isStream)
-					idx := sh.ensureBlock("text")
-					internalIdx := sh.activeTextBlockIndex
-
-					if sh.isStream {
-						deltaMap := map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": idx,
-							"delta": map[string]interface{}{
-								"type": "text_delta",
-								"text": errorMsg,
-							},
-						}
-						deltaData, _ := json.Marshal(deltaMap)
-						slog.Debug("Sending error delta via SSE", "data", string(deltaData))
-						sh.writeSSE("content_block_delta", string(deltaData))
-					} else {
-						slog.Debug("Appending error to text builder")
-						if builder, ok := sh.textBlockBuilders[internalIdx]; ok {
-							builder.WriteString(errorMsg)
-						}
+					deltaData, _ := json.Marshal(deltaMap)
+					sh.writeSSE("content_block_delta", string(deltaData))
+				} else {
+					if builder, ok := sh.textBlockBuilders[internalIdx]; ok {
+						builder.WriteString(errorMsg)
 					}
 				}
+			}
 
+			injectAuthError := func(category, errStr string) {
+				var errorMsg string
+				switch {
+				case strings.Contains(errStr, "401"):
+					errorMsg = "Authentication Error: Session expired (401). Please update your account credentials."
+				case strings.Contains(errStr, "403"):
+					errorMsg = "Access Forbidden (403): Your account might be flagged or blocked. Try re-enabling it in the Admin UI."
+				default:
+					errorMsg = fmt.Sprintf("Request Failed: %s. Please check your account status.", errStr)
+				}
+				injectErrorText("Injecting auth error to client", errorMsg)
+			}
+
+			injectRetryExhaustedError := func(lastErr string) {
+				errorMsg := fmt.Sprintf("Request failed: retries exhausted. Last error: %s", lastErr)
+				injectErrorText("Injecting retry exhausted error to client", errorMsg)
+			}
+
+			injectNoAvailableAccountError := func(lastErr string, selectErr error) {
+				errorMsg := "Request failed: retries exhausted and no available accounts. Please check account statuses in Admin UI or add valid accounts."
+				if selectErr != nil {
+					errorMsg = fmt.Sprintf("%s (selector: %v, last error: %s)", errorMsg, selectErr, lastErr)
+				}
+				injectErrorText("Injecting no available account error to client", errorMsg)
+			}
+
+			if !errClass.retryable {
+				slog.Error("Aborting retries for non-retriable error", "error", err, "category", errClass.category)
+				if errClass.category == "auth_blocked" || errClass.category == "auth" {
+					injectAuthError(errClass.category, errStr)
+				}
 				sh.finishResponse("end_turn")
 				return
 			}
@@ -757,6 +785,11 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			if retriesRemaining <= 0 {
 				if currentAccount != nil && h.loadBalancer != nil {
 					slog.Error("Account request failed, max retries reached", "account", currentAccount.Name)
+				}
+				if errClass.category == "auth" || errClass.category == "auth_blocked" {
+					injectAuthError(errClass.category, errStr)
+				} else {
+					injectRetryExhaustedError(errStr)
 				}
 				sh.finishResponse("end_turn")
 				return
@@ -787,6 +820,7 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 					}
 				} else {
 					slog.Error("No more accounts available", "error", retryErr)
+					injectNoAvailableAccountError(errStr, retryErr)
 					sh.finishResponse("end_turn")
 					return
 				}

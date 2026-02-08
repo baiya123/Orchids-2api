@@ -68,13 +68,9 @@ async function loadConfiguration() {
     document.getElementById("cfg_proxy_pass").value = cfg.proxy_pass || "";
     document.getElementById("cfg_proxy_bypass").value = (cfg.proxy_bypass || []).join("\n");
 
-    const autoToken = document.getElementById("cfg_auto_refresh_token");
-    autoToken.checked = cfg.auto_refresh_token || false;
-    updateSwitchLabel(autoToken, "自动刷新Token");
-
-    const autoUsage = document.getElementById("cfg_auto_refresh_usage");
-    autoUsage.checked = cfg.auto_refresh_usage || false;
-    updateSwitchLabel(autoUsage, "自动刷新用量");
+	const autoToken = document.getElementById("cfg_auto_refresh_token");
+	autoToken.checked = cfg.auto_refresh_token || false;
+	updateSwitchLabel(autoToken, "自动刷新Token");
 
     const outputTokenCount = document.getElementById("cfg_output_token_count");
     outputTokenCount.checked = cfg.output_token_count || false;
@@ -100,11 +96,10 @@ async function saveConfiguration() {
     max_retries: parseInt(document.getElementById("cfg_max_retries").value),
     retry_delay: parseInt(document.getElementById("cfg_retry_delay").value),
     account_switch_count: parseInt(document.getElementById("cfg_switch_count").value),
-    request_timeout: parseInt(document.getElementById("cfg_request_timeout").value),
-    token_refresh_interval: parseInt(document.getElementById("cfg_refresh_interval").value),
-    auto_refresh_token: document.getElementById("cfg_auto_refresh_token").checked,
-    auto_refresh_usage: document.getElementById("cfg_auto_refresh_usage").checked,
-    output_token_count: document.getElementById("cfg_output_token_count").checked,
+	request_timeout: parseInt(document.getElementById("cfg_request_timeout").value),
+	token_refresh_interval: parseInt(document.getElementById("cfg_refresh_interval").value),
+	auto_refresh_token: document.getElementById("cfg_auto_refresh_token").checked,
+	output_token_count: document.getElementById("cfg_output_token_count").checked,
     cache_token_count: document.getElementById("cfg_cache_token_count").checked,
     cache_ttl: parseInt(document.getElementById("cfg_cache_ttl").value),
     cache_strategy: document.getElementById("cfg_cache_strategy").value,

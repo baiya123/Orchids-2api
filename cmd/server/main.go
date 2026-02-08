@@ -266,18 +266,34 @@ func main() {
 			}
 			for _, acc := range accounts {
 				if strings.EqualFold(acc.AccountType, "warp") {
+					if !acc.QuotaResetAt.IsZero() && time.Now().Before(acc.QuotaResetAt) {
+						continue
+					}
 					if strings.TrimSpace(acc.RefreshToken) == "" && strings.TrimSpace(acc.ClientCookie) == "" {
 						continue
 					}
 					warpClient := warp.NewFromAccount(acc, cfg)
 					jwt, err := warpClient.RefreshAccount(context.Background())
 					if err != nil {
-						slog.Warn("Auto refresh token failed", "account", acc.Name, "type", "warp", "error", err)
+						retryAfter := warp.RetryAfter(err)
+						httpStatus := warp.HTTPStatusCode(err)
+						// 标记 401/403 账号状态
+						if httpStatus == 401 || httpStatus == 403 {
+							lb.MarkAccountStatus(context.Background(), acc, fmt.Sprintf("%d", httpStatus))
+						} else if retryAfter > 0 {
+							// 429 等限流错误，只记录 QuotaResetAt
+							acc.QuotaResetAt = time.Now().Add(retryAfter)
+							if updateErr := s.UpdateAccount(context.Background(), acc); updateErr != nil {
+								slog.Warn("Auto refresh token: record warp retry-after failed", "account", acc.Name, "type", "warp", "error", updateErr)
+							}
+						}
+						slog.Warn("Auto refresh token failed", "account", acc.Name, "type", "warp", "http_status", httpStatus, "error", err)
 						continue
 					}
 					if jwt != "" {
 						acc.Token = jwt
 					}
+					warpClient.SyncAccountState()
 
 					// Sync Warp usage quota via GraphQL
 					limitCtx, limitCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -295,8 +311,10 @@ func main() {
 						for _, bg := range bonuses {
 							totalLimit += float64(bg.RequestCreditsRemaining)
 						}
+						usedRequests := float64(limitInfo.RequestsUsedSinceLastRefresh)
 						acc.UsageLimit = totalLimit
-						acc.UsageCurrent = float64(limitInfo.RequestsUsedSinceLastRefresh)
+						// Warp: UsageCurrent 语义为“已使用请求数”
+						acc.UsageCurrent = usedRequests
 						if limitInfo.NextRefreshTime != "" {
 							if t, err := time.Parse(time.RFC3339, limitInfo.NextRefreshTime); err == nil {
 								acc.QuotaResetAt = t
@@ -315,6 +333,15 @@ func main() {
 				}
 				info, err := clerk.FetchAccountInfo(acc.ClientCookie)
 				if err != nil {
+					errLower := strings.ToLower(err.Error())
+					switch {
+					case strings.Contains(errLower, "status code 401") || strings.Contains(errLower, "unauthorized"):
+						lb.MarkAccountStatus(context.Background(), acc, "401")
+					case strings.Contains(errLower, "status code 403") || strings.Contains(errLower, "forbidden"):
+						lb.MarkAccountStatus(context.Background(), acc, "403")
+					case strings.Contains(errLower, "no active sessions"):
+						lb.MarkAccountStatus(context.Background(), acc, "401")
+					}
 					slog.Warn("Auto refresh token failed", "account", acc.Name, "error", err)
 					continue
 				}
@@ -336,30 +363,8 @@ func main() {
 				if info.JWT != "" {
 					acc.Token = info.JWT
 				}
-
-				// Sync Orchids credits via RSC Server Action
-				if info.JWT != "" {
-					creditsCtx, creditsCancel := context.WithTimeout(context.Background(), 15*time.Second)
-					creditsInfo, creditsErr := orchids.FetchCreditsWithAuth(creditsCtx, orchids.CreditsAuth{
-						SessionJWT: info.JWT,
-						ClientJWT:  acc.ClientCookie,
-						ClientUat:  acc.ClientUat,
-						SessionID:  acc.SessionID,
-						UserID:     acc.UserID,
-					})
-					creditsCancel()
-					if creditsErr != nil {
-						if orchids.IsCreditsSoftError(creditsErr) {
-							slog.Debug("Orchids credits sync skipped, keep previous usage", "account_id", acc.ID, "account", acc.Name, "error", creditsErr)
-						} else {
-							slog.Warn("Orchids credits sync failed", "account_id", acc.ID, "account", acc.Name, "error", creditsErr)
-						}
-					} else if creditsInfo != nil {
-						acc.Subscription = strings.ToLower(creditsInfo.Plan)
-						acc.UsageCurrent = creditsInfo.Credits
-						acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
-						slog.Debug("Orchids credits synced", "account", acc.Name, "credits", acc.UsageCurrent, "limit", acc.UsageLimit, "plan", acc.Subscription)
-					}
+				if info.ClientCookie != "" {
+					acc.ClientCookie = info.ClientCookie
 				}
 
 				if err := s.UpdateAccount(context.Background(), acc); err != nil {
@@ -423,15 +428,21 @@ func main() {
 			}
 			// 找到第一个可用的 Orchids 账号来获取上游模型
 			var client *orchids.Client
+			hasOrchidsAccount := false
 			for _, acc := range accounts {
 				if strings.EqualFold(acc.AccountType, "warp") {
 					continue
 				}
+				hasOrchidsAccount = true
 				client = orchids.NewFromAccount(acc, cfg)
 				break
 			}
 			if client == nil {
-				// 没有 Orchids 账号，使用默认配置
+				if !hasOrchidsAccount {
+					slog.Debug("上游模型同步: 无 Orchids 账号，跳过")
+					return
+				}
+				// 兜底：存在 Orchids 账号但构造失败时仍尝试默认配置
 				client = orchids.New(cfg)
 			}
 
