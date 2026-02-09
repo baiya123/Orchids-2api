@@ -143,12 +143,10 @@ func buildRequestBytes(promptText, model string, messages []prompt.Message, mcpC
 	}
 
 	// 统一使用模板路径构建请求。历史已由 buildWarpQuery 扁平化到 fullQuery 中。
-	// conversationID 直接传入模板构建，避免事后字节注入破坏 protobuf 结构。
-	var convID string
-	if isUpstreamConvID {
-		convID = conversationID
-	}
-	reqBytes, err := buildRequestBytesFromTemplate(fullQuery, isNew, disableWarpTools, convID)
+	// 注意：在 task_context 中注入 conversationID 会触发 Warp 400
+	// (invalid AIAgentRequest: cannot parse invalid wire-format data)。
+	// 当前保持空 task_context，依赖历史拼接延续上下文。
+	reqBytes, err := buildRequestBytesFromTemplate(fullQuery, isNew, disableWarpTools)
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +481,7 @@ func formatWarpHistory(history []warpHistoryMessage) []string {
 	return parts
 }
 
-func buildRequestBytesFromTemplate(userText string, isNew bool, disableWarpTools bool, conversationID ...string) ([]byte, error) {
+func buildRequestBytesFromTemplate(userText string, isNew bool, disableWarpTools bool) ([]byte, error) {
 	template := append([]byte(nil), realRequestTemplate...)
 
 	newQueryBytes := []byte(userText)
@@ -528,17 +526,8 @@ func buildRequestBytesFromTemplate(userText string, isNew bool, disableWarpTools
 	}
 	rest := template[settingsStart:]
 
-	// 构建 task_context (field 1)：直接编码而非事后注入，避免字节偏移破坏 protobuf 结构
-	var convID string
-	if len(conversationID) > 0 {
-		convID = conversationID[0]
-	}
-	taskCtx := buildTaskContext(convID)
-	taskCtxField := encoder{}
-	taskCtxField.writeMessage(1, taskCtx)
-
-	result := append([]byte(nil), taskCtxField.bytes()...)
-	result = append(result, newInputMsg...)
+	// 模板开头保留空 task_context: 0a 00
+	result := append([]byte{0x0a, 0x00}, newInputMsg...)
 	result = append(result, rest...)
 
 	if disableWarpTools {
@@ -670,7 +659,7 @@ func buildInputWithUserQuery(contextBytes, userQueryBytes []byte) []byte {
 	userInputs.writeMessage(1, userInput.bytes()) // repeated UserInput
 
 	input := encoder{}
-	input.writeMessage(1, contextBytes)    // Input.context
+	input.writeMessage(1, contextBytes)       // Input.context
 	input.writeMessage(6, userInputs.bytes()) // Input.user_inputs
 	return input.bytes()
 }
