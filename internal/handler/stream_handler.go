@@ -1299,6 +1299,7 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		}
 		if h.isStream {
 			h.emitToolUseFromInput(toolID, toolName, inputStr)
+			return
 		}
 		h.handleToolCallAfterChecks(call)
 

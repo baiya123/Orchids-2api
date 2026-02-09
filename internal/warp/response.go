@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
+	"orchids-api/internal/orchids"
 )
 
 type decoder struct {
@@ -479,10 +481,35 @@ func parseToolCall(data []byte, out *parsedEvent) {
 	if toolName == "" {
 		return
 	}
+	if isIncompleteToolCall(toolName, toolInput) {
+		return
+	}
+	toolName = orchids.NormalizeToolName(toolName)
+	if orchids.DefaultToolMapper.IsBlocked(toolName) {
+		return
+	}
 	if toolID == "" {
 		toolID = fmt.Sprintf("warp_%d", time.Now().UnixNano())
 	}
 	out.ToolCalls = append(out.ToolCalls, toolCall{ID: toolID, Name: toolName, Input: toolInput})
+}
+
+func isIncompleteToolCall(toolName, toolInput string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "run_shell_command", "write_to_long_running_shell_command", "bash":
+		input := strings.TrimSpace(toolInput)
+		if input == "" || input == "{}" {
+			return true
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(input), &payload); err != nil {
+			return false
+		}
+		command, _ := payload["command"].(string)
+		return strings.TrimSpace(command) == ""
+	default:
+		return false
+	}
 }
 
 func parseCallMCPTool(data []byte) (string, string) {

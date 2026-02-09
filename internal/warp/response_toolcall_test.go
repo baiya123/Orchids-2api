@@ -52,7 +52,7 @@ func TestParseResponseEvent_FallbackToolCallHasCommand(t *testing.T) {
 
 	var found bool
 	for _, tc := range parsed.ToolCalls {
-		if tc.Name != "run_shell_command" {
+		if tc.Name != "Bash" {
 			continue
 		}
 		found = true
@@ -61,6 +61,42 @@ func TestParseResponseEvent_FallbackToolCallHasCommand(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("run_shell_command tool call not found")
+		t.Fatalf("Bash tool call not found")
+	}
+}
+
+func TestParseToolCall_DropsIncompleteRunShellCommand(t *testing.T) {
+	t.Parallel()
+
+	// field1 tool_call_id, field2 run_shell_command payload(without command)
+	payload := []byte{
+		0x0a, 0x08, 't', 'o', 'o', 'l', '_', 'i', 'd', '1',
+		0x12, 0x06, 0x10, 0x00, 0x18, 0x00, 0x28, 0x00,
+	}
+	out := &parsedEvent{}
+	parseToolCall(payload, out)
+	if len(out.ToolCalls) != 0 {
+		t.Fatalf("expected no tool calls, got %d", len(out.ToolCalls))
+	}
+}
+
+func TestParseToolCall_NormalizesRunShellToBash(t *testing.T) {
+	t.Parallel()
+
+	// field1 tool_call_id, field2 run_shell_command payload(with command)
+	payload := []byte{
+		0x0a, 0x08, 't', 'o', 'o', 'l', '_', 'i', 'd', '2',
+		0x12, 0x10, 0x0a, 0x06, 'l', 's', ' ', '-', 'l', 'a', 0x10, 0x01, 0x18, 0x00, 0x28, 0x00, 0x30, 0x00,
+	}
+	out := &parsedEvent{}
+	parseToolCall(payload, out)
+	if len(out.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %d", len(out.ToolCalls))
+	}
+	if out.ToolCalls[0].Name != "Bash" {
+		t.Fatalf("expected Bash, got %q", out.ToolCalls[0].Name)
+	}
+	if !strings.Contains(out.ToolCalls[0].Input, "ls -la") {
+		t.Fatalf("expected command in input, got %q", out.ToolCalls[0].Input)
 	}
 }
