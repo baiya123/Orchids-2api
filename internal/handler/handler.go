@@ -447,9 +447,6 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		effectiveTools = nil
 		slog.Debug("tool_gate: disabled tools for short non-code request")
 	}
-	if isWarpRequest {
-		effectiveTools = normalizeWarpTools(effectiveTools)
-	}
 
 	// 构建 prompt（V2 Markdown 格式）
 	startBuild := time.Now()
@@ -535,21 +532,6 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// 状态管理
 	// msgID is now managed by streamHandler
 
-	allowedTools := map[string]string{}
-	// Pre-allocation optimization
-	if len(effectiveTools) > 0 {
-		allowedTools = make(map[string]string, len(effectiveTools))
-		for _, t := range effectiveTools {
-			if tm, ok := t.(map[string]interface{}); ok {
-				name := toolNameFromDef(tm)
-				if name != "" {
-					allowedTools[strings.ToLower(name)] = name
-				}
-			}
-		}
-	}
-	allowedIndex := buildToolNameIndex(effectiveTools, allowedTools)
-
 	var chatHistory []interface{}
 	upstreamMessages := append([]prompt.Message(nil), req.Messages...)
 
@@ -578,7 +560,7 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	responseFormat := adapter.DetectResponseFormat(r.URL.Path)
 
 	sh := newStreamHandler(
-		h.config, w, logger, suppressThinking, allowedTools, allowedIndex, isStream, responseFormat, effectiveWorkdir,
+		h.config, w, logger, suppressThinking, isStream, responseFormat, effectiveWorkdir,
 	)
 	sh.setUsageTokens(inputTokens, -1) // Correctly initialize input tokens
 	// 捕获上游返回的 conversationID，持久化到 session 以便后续请求复用

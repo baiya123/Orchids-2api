@@ -13,7 +13,6 @@ import (
 	"orchids-api/internal/adapter"
 	"orchids-api/internal/config"
 	"orchids-api/internal/debug"
-	"orchids-api/internal/orchids"
 	"orchids-api/internal/perf"
 	"orchids-api/internal/tiktoken"
 	"orchids-api/internal/upstream"
@@ -72,11 +71,6 @@ type streamHandler struct {
 	toolCallDedup      map[string]struct{}
 	introDedup         map[string]struct{}
 
-	// Tool Resolution
-	allowedTools map[string]string
-	allowedIndex []toolNameInfo
-	hasToolList  bool
-
 	// Throttling
 	lastScanTime time.Time
 
@@ -92,8 +86,6 @@ func newStreamHandler(
 	w http.ResponseWriter,
 	logger *debug.Logger,
 	suppressThinking bool,
-	allowedTools map[string]string,
-	allowedIndex []toolNameInfo,
 	isStream bool,
 	responseFormat adapter.ResponseFormat,
 	workdir string,
@@ -118,9 +110,6 @@ func newStreamHandler(
 		isStream:         isStream,
 		logger:           logger,
 		suppressThinking: suppressThinking,
-		allowedTools:     allowedTools,
-		allowedIndex:     allowedIndex,
-		hasToolList:      len(allowedTools) > 0,
 		outputTokenMode:  outputTokenMode,
 		responseFormat:   responseFormat,
 
@@ -353,9 +342,12 @@ func (h *streamHandler) shouldEmitToolCalls(stopReason string) bool {
 func (h *streamHandler) emitToolCallNonStream(call toolCall) {
 	h.addOutputTokens(call.name)
 	h.addOutputTokens(call.input)
-	fixedInput := fixToolInputForName(call.name, call.input)
+	inputJSON := strings.TrimSpace(call.input)
+	if inputJSON == "" {
+		inputJSON = "{}"
+	}
 	var inputValue interface{}
-	if err := json.Unmarshal([]byte(fixedInput), &inputValue); err != nil {
+	if err := json.Unmarshal([]byte(inputJSON), &inputValue); err != nil {
 		inputValue = map[string]interface{}{}
 	}
 	h.contentBlocks = append(h.contentBlocks, map[string]interface{}{
@@ -379,7 +371,10 @@ func (h *streamHandler) emitToolCallStream(call toolCall, idx int, write func(ev
 
 	h.addOutputTokens(call.name)
 	h.addOutputTokens(call.input)
-	fixedInput := fixToolInputForName(call.name, call.input)
+	inputJSON := strings.TrimSpace(call.input)
+	if inputJSON == "" {
+		inputJSON = "{}"
+	}
 
 	startMap := perf.AcquireMap()
 	startMap["type"] = "content_block_start"
@@ -404,7 +399,7 @@ func (h *streamHandler) emitToolCallStream(call toolCall, idx int, write func(ev
 
 	deltaContent := perf.AcquireMap()
 	deltaContent["type"] = "input_json_delta"
-	deltaContent["partial_json"] = fixedInput
+	deltaContent["partial_json"] = inputJSON
 	deltaMap["delta"] = deltaContent
 
 	deltaData, _ := json.Marshal(deltaMap)
@@ -435,9 +430,9 @@ func (h *streamHandler) emitToolUseFromInput(toolID, toolName, inputStr string) 
 	h.mu.Unlock()
 
 	h.addOutputTokens(toolName)
-	fixedInput := fixToolInputForName(toolName, inputStr)
-	if fixedInput == "" {
-		fixedInput = "{}"
+	inputJSON := strings.TrimSpace(inputStr)
+	if inputJSON == "" {
+		inputJSON = "{}"
 	}
 
 	h.mu.Lock()
@@ -466,7 +461,7 @@ func (h *streamHandler) emitToolUseFromInput(toolID, toolName, inputStr string) 
 	deltaMap["index"] = idx
 	deltaContent := perf.AcquireMap()
 	deltaContent["type"] = "input_json_delta"
-	deltaContent["partial_json"] = fixedInput
+	deltaContent["partial_json"] = inputJSON
 	deltaMap["delta"] = deltaContent
 	deltaData, _ := json.Marshal(deltaMap)
 	perf.ReleaseMap(deltaContent)
@@ -562,20 +557,6 @@ func (h *streamHandler) finishResponse(stopReason string) {
 	// 记录摘要
 	h.logger.LogSummary(h.inputTokens, h.outputTokens, time.Since(h.startTime), stopReason)
 	slog.Debug("Request completed", "input_tokens", h.inputTokens, "output_tokens", h.outputTokens, "duration", time.Since(h.startTime))
-}
-
-func (h *streamHandler) resolveToolName(name string) (string, bool) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", false
-	}
-	if !h.hasToolList {
-		return name, true
-	}
-	if resolved, ok := h.allowedTools[strings.ToLower(name)]; ok {
-		return resolved, true
-	}
-	return "", false
 }
 
 func (h *streamHandler) ensureBlock(blockType string) int {
@@ -735,14 +716,7 @@ func (h *streamHandler) writeSSELocked(event, data string) {
 
 func normalizeToolDedupInput(input string) string {
 	input = strings.TrimSpace(input)
-	if input == "" {
-		return ""
-	}
-	fixed := strings.TrimSpace(fixToolInput(input))
-	if fixed == "" {
-		return input
-	}
-	return fixed
+	return input
 }
 
 func hashToolCallKey(name, input string) string {
@@ -1238,12 +1212,6 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if toolID == "" || toolName == "" {
 			return
 		}
-		mappedName := mapOrchidsToolName(toolName, "", h.allowedIndex, h.allowedTools)
-		finalName, ok := h.resolveToolName(mappedName)
-		if !ok || orchids.DefaultToolMapper.IsBlocked(finalName) {
-			h.toolCallHandled[toolID] = true
-			return
-		}
 		h.currentToolInputID = toolID
 		h.toolInputNames[toolID] = toolName
 		h.toolInputBuffers[toolID] = perf.AcquireStringBuilder()
@@ -1294,13 +1262,7 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if h.toolCallHandled[toolID] {
 			return
 		}
-		resolvedName := mapOrchidsToolName(name, inputStr, h.allowedIndex, h.allowedTools)
-		finalName, ok := h.resolveToolName(resolvedName)
-		if !ok || orchids.DefaultToolMapper.IsBlocked(finalName) {
-			h.toolCallHandled[toolID] = true
-			return
-		}
-		call := toolCall{id: toolID, name: finalName, input: inputStr}
+		call := toolCall{id: toolID, name: name, input: inputStr}
 		h.toolCallHandled[toolID] = true
 		if !h.shouldAcceptToolCall(call) {
 			return
@@ -1309,7 +1271,7 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 			if inputStr != "" {
 				h.addOutputTokens(inputStr)
 			}
-			h.emitToolUseFromInput(toolID, finalName, inputStr)
+			h.emitToolUseFromInput(toolID, name, inputStr)
 			return
 		}
 		h.handleToolCallAfterChecks(call)
@@ -1330,19 +1292,13 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if _, ok := h.toolInputBuffers[toolID]; ok {
 			return
 		}
-		mappedName := mapOrchidsToolName(toolName, inputStr, h.allowedIndex, h.allowedTools)
-		resolvedName, ok := h.resolveToolName(mappedName)
-		if !ok || orchids.DefaultToolMapper.IsBlocked(resolvedName) {
-			h.toolCallHandled[toolID] = true
-			return
-		}
-		call := toolCall{id: toolID, name: resolvedName, input: inputStr}
+		call := toolCall{id: toolID, name: toolName, input: inputStr}
 		h.toolCallHandled[toolID] = true
 		if !h.shouldAcceptToolCall(call) {
 			return
 		}
 		if h.isStream {
-			h.emitToolUseFromInput(toolID, resolvedName, inputStr)
+			h.emitToolUseFromInput(toolID, toolName, inputStr)
 		}
 		h.handleToolCallAfterChecks(call)
 

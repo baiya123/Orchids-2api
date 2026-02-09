@@ -466,9 +466,11 @@ func parseToolCall(data []byte, out *parsedEvent) {
 				if err != nil {
 					return
 				}
-				_ = payload
 				toolName = fallbackToolName(field)
-				toolInput = "{}"
+				toolInput = parseFallbackToolInput(toolName, payload)
+				if toolInput == "" {
+					toolInput = "{}"
+				}
 				continue
 			}
 			_ = d.skip(wire)
@@ -515,6 +517,86 @@ func parseCallMCPTool(data []byte) (string, string) {
 		}
 	}
 	return name, input
+}
+
+func parseFallbackToolInput(toolName string, payload []byte) string {
+	switch toolName {
+	case "run_shell_command", "write_to_long_running_shell_command":
+		input := map[string]interface{}{}
+		d := decoder{data: payload}
+		for !d.eof() {
+			field, wire, err := d.readKey()
+			if err != nil {
+				break
+			}
+			switch field {
+			case 1: // command
+				if wire != 2 {
+					_ = d.skip(wire)
+					continue
+				}
+				b, err := d.readBytes()
+				if err != nil {
+					break
+				}
+				if cmd := string(b); cmd != "" {
+					input["command"] = cmd
+				}
+			case 2: // is_read_only
+				if wire != 0 {
+					_ = d.skip(wire)
+					continue
+				}
+				v, err := d.readVarint()
+				if err != nil {
+					break
+				}
+				input["is_read_only"] = v != 0
+			case 3: // uses_pager
+				if wire != 0 {
+					_ = d.skip(wire)
+					continue
+				}
+				v, err := d.readVarint()
+				if err != nil {
+					break
+				}
+				input["uses_pager"] = v != 0
+			case 5: // is_risky
+				if wire != 0 {
+					_ = d.skip(wire)
+					continue
+				}
+				v, err := d.readVarint()
+				if err != nil {
+					break
+				}
+				input["is_risky"] = v != 0
+			case 6: // wait_until_complete
+				if wire != 0 {
+					_ = d.skip(wire)
+					continue
+				}
+				v, err := d.readVarint()
+				if err != nil {
+					break
+				}
+				input["wait_until_complete"] = v != 0
+			default:
+				_ = d.skip(wire)
+			}
+		}
+		if len(input) == 0 {
+			return "{}"
+		}
+		b, err := json.Marshal(input)
+		if err != nil {
+			return "{}"
+		}
+		return string(b)
+	default:
+		return "{}"
+	}
 }
 
 func fallbackToolName(field int) string {
