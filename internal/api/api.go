@@ -17,6 +17,7 @@ import (
 	"orchids-api/internal/auth"
 	"orchids-api/internal/clerk"
 	"orchids-api/internal/config"
+	"orchids-api/internal/orchids"
 	"orchids-api/internal/prompt"
 	"orchids-api/internal/store"
 	"orchids-api/internal/tokencache"
@@ -245,7 +246,7 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if acc.ClientCookie != "" && acc.SessionID == "" && !strings.EqualFold(acc.AccountType, "warp") {
-			info, err := clerk.FetchAccountInfo(acc.ClientCookie)
+			info, err := clerk.FetchAccountInfoWithSession(acc.ClientCookie, acc.SessionCookie)
 			if err != nil {
 				slog.Warn("Failed to fetch account info, saving without session data", "error", err)
 			} else {
@@ -336,10 +337,33 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 				acc.Token = jwt
 				warpClient.SyncAccountState()
 			} else {
-				info, err := clerk.FetchAccountInfo(acc.ClientCookie)
+				info, err := clerk.FetchAccountInfoWithSession(acc.ClientCookie, acc.SessionCookie)
 				if err != nil {
-					http.Error(w, "Failed to refresh account: "+err.Error(), http.StatusBadRequest)
-					return
+					refreshErr := err
+					// Fallback: when Clerk cannot enumerate active sessions, try session-id token endpoint.
+					if strings.Contains(strings.ToLower(err.Error()), "no active sessions found") && strings.TrimSpace(acc.SessionID) != "" {
+						var cfg *config.Config
+						a.configMu.RLock()
+						if raw, ok := a.config.(*config.Config); ok {
+							cfg = raw
+						}
+						a.configMu.RUnlock()
+
+						orchidsClient := orchids.NewFromAccount(acc, cfg)
+						jwt, jwtErr := orchidsClient.GetToken()
+						if jwtErr == nil && strings.TrimSpace(jwt) != "" {
+							acc.Token = jwt
+							refreshErr = nil
+							slog.Warn("Orchids refresh: no active sessions, fallback token refresh succeeded", "account_id", id)
+						} else if jwtErr != nil {
+							refreshErr = errors.New(err.Error() + "; fallback token error: " + jwtErr.Error())
+						}
+					}
+
+					if refreshErr != nil {
+						http.Error(w, "Failed to refresh account: "+refreshErr.Error(), http.StatusBadRequest)
+						return
+					}
 				} else {
 					slog.Info("Orchids refresh: clerk info", "account_id", id, "has_jwt", info.JWT != "", "email", info.Email)
 					acc.SessionID = info.SessionID

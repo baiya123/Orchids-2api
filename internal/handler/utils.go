@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"orchids-api/internal/prompt"
 )
@@ -211,6 +212,133 @@ func isSuggestionMode(messages []prompt.Message) bool {
 func containsSuggestionMode(text string) bool {
 	clean := stripSystemRemindersForMode(text)
 	return strings.Contains(strings.ToLower(clean), "suggestion mode")
+}
+
+func isTopicClassifierRequest(req ClaudeRequest) bool {
+	for _, item := range req.System {
+		if strings.ToLower(strings.TrimSpace(item.Type)) != "text" {
+			continue
+		}
+		lower := strings.ToLower(stripSystemRemindersForMode(item.Text))
+		if strings.Contains(lower, "new conversation topic") &&
+			strings.Contains(lower, "isnewtopic") &&
+			strings.Contains(lower, "json object") &&
+			strings.Contains(lower, "title") {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyTopicRequest(req ClaudeRequest) (bool, string) {
+	userTexts := extractUserTexts(req.Messages)
+	if len(userTexts) == 0 {
+		return false, ""
+	}
+
+	latest := strings.TrimSpace(userTexts[len(userTexts)-1])
+	if latest == "" {
+		return false, ""
+	}
+
+	prev := ""
+	if len(userTexts) >= 2 {
+		prev = strings.TrimSpace(userTexts[len(userTexts)-2])
+	}
+
+	if prev == "" {
+		return true, generateTopicTitle(latest)
+	}
+
+	if isGreetingText(latest) {
+		return false, ""
+	}
+
+	latestNorm := normalizeTopicText(latest)
+	prevNorm := normalizeTopicText(prev)
+	if latestNorm == "" || prevNorm == "" {
+		return latest != prev, generateTopicTitle(latest)
+	}
+	if latestNorm == prevNorm || strings.Contains(latestNorm, prevNorm) || strings.Contains(prevNorm, latestNorm) {
+		return false, ""
+	}
+	return true, generateTopicTitle(latest)
+}
+
+func extractUserTexts(messages []prompt.Message) []string {
+	texts := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		if strings.ToLower(strings.TrimSpace(msg.Role)) != "user" {
+			continue
+		}
+		if msg.Content.IsString() {
+			text := strings.TrimSpace(stripSystemRemindersForMode(msg.Content.GetText()))
+			if text != "" {
+				texts = append(texts, text)
+			}
+			continue
+		}
+		var parts []string
+		for _, block := range msg.Content.GetBlocks() {
+			if strings.ToLower(strings.TrimSpace(block.Type)) != "text" {
+				continue
+			}
+			text := strings.TrimSpace(stripSystemRemindersForMode(block.Text))
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		merged := strings.TrimSpace(strings.Join(parts, "\n"))
+		if merged != "" {
+			texts = append(texts, merged)
+		}
+	}
+	return texts
+}
+
+func isGreetingText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	switch lower {
+	case "hi", "hello", "hey", "你好", "您好", "嗨", "在吗":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeTopicText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func generateTopicTitle(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "New Topic"
+	}
+	words := strings.Fields(trimmed)
+	if len(words) >= 2 {
+		if len(words) > 3 {
+			words = words[:3]
+		}
+		return strings.Join(words, " ")
+	}
+	runes := []rune(trimmed)
+	if len(runes) > 10 {
+		runes = runes[:10]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 // stripSystemRemindersForMode 移除 <system-reminder>...</system-reminder>，避免误判 plan/suggestion 模式

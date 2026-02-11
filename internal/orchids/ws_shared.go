@@ -449,7 +449,7 @@ func (c *Client) getWSToken() (string, error) {
 	}
 
 	if c.config != nil && strings.TrimSpace(c.config.ClientCookie) != "" {
-		info, err := clerk.FetchAccountInfoWithProject(c.config.ClientCookie, c.config.ProjectID)
+		info, err := clerk.FetchAccountInfoWithProjectAndSession(c.config.ClientCookie, c.config.SessionCookie, c.config.ProjectID)
 		if err == nil && info.JWT != "" {
 			return info.JWT, nil
 		}

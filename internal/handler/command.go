@@ -141,6 +141,113 @@ func writeCommandPrefixResponse(w http.ResponseWriter, req ClaudeRequest, prefix
 	}
 }
 
+func writeTopicClassifierResponse(w http.ResponseWriter, req ClaudeRequest, startTime time.Time, logger *debug.Logger) {
+	isNewTopic, title := classifyTopicRequest(req)
+	payload := map[string]interface{}{
+		"isNewTopic": isNewTopic,
+		"title":      nil,
+	}
+	if isNewTopic {
+		payload["title"] = title
+	}
+	raw, _ := json.Marshal(payload)
+	text := string(raw)
+
+	inputTokens := tiktoken.EstimateTextTokens(extractUserText(req.Messages))
+	outputTokens := tiktoken.EstimateTextTokens(text)
+	msgID := fmt.Sprintf("msg_%d", time.Now().UnixMilli())
+
+	if req.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+			return
+		}
+
+		write := func(event string, data string) {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+			flusher.Flush()
+			if logger != nil {
+				logger.LogOutputSSE(event, data)
+			}
+		}
+
+		startData, _ := json.Marshal(map[string]interface{}{
+			"type": "message_start",
+			"message": map[string]interface{}{
+				"id":      msgID,
+				"type":    "message",
+				"role":    "assistant",
+				"content": []interface{}{},
+				"model":   req.Model,
+				"usage":   map[string]int{"input_tokens": inputTokens, "output_tokens": 0},
+			},
+		})
+		write("message_start", string(startData))
+
+		blockStart, _ := json.Marshal(map[string]interface{}{
+			"type":          "content_block_start",
+			"index":         0,
+			"content_block": map[string]string{"type": "text", "text": ""},
+		})
+		write("content_block_start", string(blockStart))
+
+		blockDelta, _ := json.Marshal(map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]string{"type": "text_delta", "text": text},
+		})
+		write("content_block_delta", string(blockDelta))
+
+		blockStop, _ := json.Marshal(map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": 0,
+		})
+		write("content_block_stop", string(blockStop))
+
+		msgDelta, _ := json.Marshal(map[string]interface{}{
+			"type":  "message_delta",
+			"delta": map[string]string{"stop_reason": "end_turn"},
+			"usage": map[string]int{"output_tokens": outputTokens},
+		})
+		write("message_delta", string(msgDelta))
+
+		msgStop, _ := json.Marshal(map[string]string{"type": "message_stop"})
+		write("message_stop", string(msgStop))
+		if logger != nil {
+			logger.LogSummary(inputTokens, outputTokens, time.Since(startTime), "end_turn")
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"id":            msgID,
+		"type":          "message",
+		"role":          "assistant",
+		"content":       []map[string]string{{"type": "text", "text": text}},
+		"model":         req.Model,
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage": map[string]int{
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+		},
+	}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		if logger != nil {
+			logger.LogOutputSSE("error", fmt.Sprintf("failed to encode response: %v", err))
+		}
+	}
+	if logger != nil {
+		logger.LogSummary(inputTokens, outputTokens, time.Since(startTime), "end_turn")
+	}
+}
+
 func detectCommandPrefix(command string) string {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {

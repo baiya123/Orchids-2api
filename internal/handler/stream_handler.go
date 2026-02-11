@@ -52,12 +52,14 @@ type streamHandler struct {
 	// Buffers and Builders
 	responseText          *strings.Builder
 	outputBuilder         *strings.Builder
+	writeChunkBuffer      *strings.Builder
 	textBlockBuilders     map[int]*strings.Builder
 	thinkingBlockBuilders map[int]*strings.Builder
 	thinkingBlockSigs     map[int]string
 	contentBlocks         []map[string]interface{}
 	currentTextIndex      int
 	pendingThinkingSig    string
+	hasTextOutput         bool
 
 	// Tool Handling (proxy mode only)
 	toolBlocks         map[string]int
@@ -121,6 +123,7 @@ func newStreamHandler(
 		toolBlocks:               make(map[string]int),
 		responseText:             perf.AcquireStringBuilder(),
 		outputBuilder:            perf.AcquireStringBuilder(),
+		writeChunkBuffer:         perf.AcquireStringBuilder(),
 		textBlockBuilders:        make(map[int]*strings.Builder),
 		thinkingBlockBuilders:    make(map[int]*strings.Builder),
 		thinkingBlockSigs:        make(map[int]string),
@@ -148,6 +151,7 @@ func newStreamHandler(
 func (h *streamHandler) release() {
 	perf.ReleaseStringBuilder(h.responseText)
 	perf.ReleaseStringBuilder(h.outputBuilder)
+	perf.ReleaseStringBuilder(h.writeChunkBuffer)
 	for _, sb := range h.textBlockBuilders {
 		perf.ReleaseStringBuilder(sb)
 	}
@@ -342,8 +346,10 @@ func (h *streamHandler) resetRoundState() {
 	h.toolCallCount = 0
 	h.outputTokens = 0
 	h.outputBuilder.Reset()
+	h.writeChunkBuffer.Reset()
 	h.useUpstreamUsage = false
 	h.finalStopReason = ""
+	h.hasTextOutput = false
 }
 
 func (h *streamHandler) shouldEmitToolCalls(stopReason string) bool {
@@ -612,6 +618,7 @@ func (h *streamHandler) finishResponse(stopReason string) {
 		h.mu.Lock()
 		h.closeActiveBlockLocked()
 		h.mu.Unlock()
+		h.emitWriteChunkFallbackIfNeeded(h.writeFinalSSE)
 		h.flushPendingToolCalls(stopReason, h.writeFinalSSE)
 		h.finalizeOutputTokens()
 		deltaMap := perf.AcquireMap()
@@ -642,6 +649,7 @@ func (h *streamHandler) finishResponse(stopReason string) {
 		}
 		perf.ReleaseMap(stopMap)
 	} else {
+		h.emitWriteChunkFallbackIfNeeded(h.writeFinalSSE)
 		h.flushPendingToolCalls(stopReason, h.writeFinalSSE)
 		h.finalizeOutputTokens()
 	}
@@ -817,9 +825,14 @@ func (h *streamHandler) writeSSELocked(event, data string) {
 // Event Handlers
 
 func (h *streamHandler) emitTextBlock(text string) {
+	h.emitTextBlockWithWriter(text, h.writeSSE)
+}
+
+func (h *streamHandler) emitTextBlockWithWriter(text string, write func(event, data string)) {
 	if !h.isStream || text == "" {
 		return
 	}
+	h.markTextOutput()
 
 	h.mu.Lock()
 	h.blockIndex++
@@ -836,7 +849,7 @@ func (h *streamHandler) emitTextBlock(text string) {
 	startData, _ := json.Marshal(startMap)
 	perf.ReleaseMap(startContent)
 	perf.ReleaseMap(startMap)
-	h.writeSSE("content_block_start", string(startData))
+	write("content_block_start", string(startData))
 
 	deltaMap := perf.AcquireMap()
 	deltaMap["type"] = "content_block_delta"
@@ -848,14 +861,47 @@ func (h *streamHandler) emitTextBlock(text string) {
 	deltaData, _ := json.Marshal(deltaMap)
 	perf.ReleaseMap(deltaContent)
 	perf.ReleaseMap(deltaMap)
-	h.writeSSE("content_block_delta", string(deltaData))
+	write("content_block_delta", string(deltaData))
 
 	stopMap := perf.AcquireMap()
 	stopMap["type"] = "content_block_stop"
 	stopMap["index"] = idx
 	stopData, _ := json.Marshal(stopMap)
 	perf.ReleaseMap(stopMap)
-	h.writeSSE("content_block_stop", string(stopData))
+	write("content_block_stop", string(stopData))
+}
+
+func (h *streamHandler) markTextOutput() {
+	h.mu.Lock()
+	h.hasTextOutput = true
+	h.mu.Unlock()
+}
+
+func (h *streamHandler) emitWriteChunkFallbackIfNeeded(write func(event, data string)) {
+	if h.writeChunkBuffer == nil {
+		return
+	}
+
+	h.mu.Lock()
+	if h.hasTextOutput || h.writeChunkBuffer.Len() == 0 {
+		h.mu.Unlock()
+		return
+	}
+	text := h.writeChunkBuffer.String()
+	h.hasTextOutput = true
+	h.mu.Unlock()
+
+	if h.isStream {
+		h.emitTextBlockWithWriter(text, write)
+		return
+	}
+
+	h.mu.Lock()
+	h.contentBlocks = append(h.contentBlocks, map[string]interface{}{
+		"type": "text",
+		"text": text,
+	})
+	h.mu.Unlock()
 }
 
 func (h *streamHandler) handleToolCallAfterChecks(call toolCall) {
@@ -1312,10 +1358,10 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if delta == "" {
 			return
 		}
-
 		if h.shouldSkipIntroDelta(delta) {
 			return
 		}
+		h.markTextOutput()
 
 		h.mu.Lock()
 		sseIdx := h.activeTextSSEIndex
@@ -1376,15 +1422,17 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 		if h.isStream {
 			data, _ := msg.Event["data"].(map[string]interface{})
 			path, _ := data["file_path"].(string)
-			op := "Writing"
-			if strings.Contains(msg.Type, "Edit") {
-				op = "Editing"
-			}
-			h.ensureBlock("thinking")
-			h.emitThinkingDelta(fmt.Sprintf("\n[%s %s...]\n", op, path))
+			if !h.suppressThinking {
+				op := "Writing"
+				if strings.Contains(msg.Type, "Edit") {
+					op = "Editing"
+				}
+				h.ensureBlock("thinking")
+				h.emitThinkingDelta(fmt.Sprintf("\n[%s %s...]\n", op, path))
 
-			rawData, _ := json.Marshal(msg.Event)
-			h.writeSSE(msg.Type, string(rawData))
+				rawData, _ := json.Marshal(msg.Event)
+				h.writeSSE(msg.Type, string(rawData))
+			}
 		}
 		return
 
@@ -1393,19 +1441,34 @@ func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 			data, _ := msg.Event["data"].(map[string]interface{})
 			text, _ := data["text"].(string)
 			if text != "" {
-				// Map Orchids code chunks to thinking blocks for standard UIs
-				h.emitThinkingDelta(text)
+				h.mu.Lock()
+				if h.writeChunkBuffer != nil {
+					h.writeChunkBuffer.WriteString(text)
+				}
+				h.mu.Unlock()
+				// In no-thinking mode, surface Orchids write chunks as normal text deltas
+				// so clients still see visible output instead of only internal events.
+				if h.suppressThinking {
+					h.emitTextDelta(text)
+				} else {
+					// Map Orchids code chunks to thinking blocks for standard UIs.
+					h.emitThinkingDelta(text)
+				}
 			}
-			rawData, _ := json.Marshal(msg.Event)
-			h.writeSSE(msg.Type, string(rawData))
+			if !h.suppressThinking {
+				rawData, _ := json.Marshal(msg.Event)
+				h.writeSSE(msg.Type, string(rawData))
+			}
 		}
 		return
 
 	case "coding_agent.Write.content.completed", "coding_agent.Edit.edit.completed", "coding_agent.edit_file.completed":
 		if h.isStream {
-			h.emitThinkingDelta("\n[Done]\n")
-			data, _ := json.Marshal(msg.Event)
-			h.writeSSE(msg.Type, string(data))
+			if !h.suppressThinking {
+				h.emitThinkingDelta("\n[Done]\n")
+				data, _ := json.Marshal(msg.Event)
+				h.writeSSE(msg.Type, string(data))
+			}
 		}
 		return
 
@@ -1654,11 +1717,56 @@ func (h *streamHandler) emitThinkingDelta(delta string) {
 	perf.ReleaseMap(m)
 }
 
+func (h *streamHandler) emitTextDelta(delta string) {
+	if delta == "" {
+		return
+	}
+	h.markTextOutput()
+
+	h.mu.Lock()
+	sseIdx := h.activeTextSSEIndex
+	internalIdx := h.activeTextBlockIndex
+	h.mu.Unlock()
+
+	if sseIdx < 0 {
+		sseIdx = h.ensureBlock("text")
+		h.mu.Lock()
+		internalIdx = h.activeTextBlockIndex
+		h.mu.Unlock()
+	}
+
+	h.addOutputTokens(delta)
+
+	h.mu.Lock()
+	if internalIdx >= 0 && internalIdx < len(h.contentBlocks) {
+		builder, ok := h.textBlockBuilders[internalIdx]
+		if !ok {
+			builder = perf.AcquireStringBuilder()
+			h.textBlockBuilders[internalIdx] = builder
+		}
+		builder.WriteString(delta)
+	}
+	h.mu.Unlock()
+
+	m := perf.AcquireMap()
+	m["type"] = "content_block_delta"
+	m["index"] = sseIdx
+	deltaMap := perf.AcquireMap()
+	deltaMap["type"] = "text_delta"
+	deltaMap["text"] = delta
+	m["delta"] = deltaMap
+	data, _ := json.Marshal(m)
+	h.writeSSE("content_block_delta", string(data))
+	perf.ReleaseMap(deltaMap)
+	perf.ReleaseMap(m)
+}
+
 // InjectErrorText injects an error message as a text delta into the stream or buffer.
 func (h *streamHandler) InjectErrorText(logMsg, errorMsg string) {
 	if h.config != nil && h.config.DebugEnabled {
 		slog.Info(logMsg, "error_msg", errorMsg, "is_stream", h.isStream)
 	}
+	h.markTextOutput()
 	idx := h.ensureBlock("text")
 	internalIdx := h.activeTextBlockIndex
 

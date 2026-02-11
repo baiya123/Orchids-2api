@@ -246,3 +246,69 @@ func TestHandleMessages_NonStreamIncludesToolUse(t *testing.T) {
 		t.Fatalf("unexpected output_tokens: %d", resp.Usage.OutputTokens)
 	}
 }
+
+func TestHandleMessages_TopicClassifierHandledLocally(t *testing.T) {
+	reqPayload := ClaudeRequest{
+		Model: "claude-haiku-4-5-20251001",
+		Messages: []prompt.Message{
+			{
+				Role:    "user",
+				Content: prompt.MessageContent{Text: "帮我用python写一个计算器"},
+			},
+		},
+		System: SystemItems{
+			{
+				Type: "text",
+				Text: "Analyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title that captures the new topic. Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false).",
+			},
+		},
+		Stream: false,
+		Tools:  []interface{}{},
+	}
+
+	body, err := json.Marshal(reqPayload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	h := &Handler{
+		config: &config.Config{DebugEnabled: false},
+		// No client configured: if topic classifier is not short-circuited,
+		// HandleMessages would return 503 "no client configured".
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/orchids/v1/messages", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(resp.Content))
+	}
+	if resp.Content[0].Type != "text" {
+		t.Fatalf("unexpected content type: %q", resp.Content[0].Type)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(resp.Content[0].Text), &payload); err != nil {
+		t.Fatalf("expected topic-classifier JSON text, got: %q (%v)", resp.Content[0].Text, err)
+	}
+	if _, ok := payload["isNewTopic"]; !ok {
+		t.Fatalf("missing isNewTopic in payload: %v", payload)
+	}
+	if _, ok := payload["title"]; !ok {
+		t.Fatalf("missing title in payload: %v", payload)
+	}
+}

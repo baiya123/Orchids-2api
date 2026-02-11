@@ -211,7 +211,7 @@ func (c *Client) forceRefreshToken() (string, error) {
 	}
 
 	if strings.TrimSpace(c.config.ClientCookie) != "" {
-		info, err := clerk.FetchAccountInfoWithProject(c.config.ClientCookie, c.config.ProjectID)
+		info, err := clerk.FetchAccountInfoWithProjectAndSession(c.config.ClientCookie, c.config.SessionCookie, c.config.ProjectID)
 		if err == nil && info.JWT != "" {
 			c.applyAccountInfo(info)
 			c.persistAccountInfo(info)

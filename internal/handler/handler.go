@@ -306,6 +306,15 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isTopicClassifierRequest(req) {
+		slog.Debug("Handling topic classifier request locally")
+		logger.LogEarlyExit("topic_classifier", map[string]interface{}{
+			"mode": "local",
+		})
+		writeTopicClassifierResponse(w, req, startTime, logger)
+		return
+	}
+
 	cacheStrategy := h.config.CacheStrategy
 	if cacheStrategy != "" && cacheStrategy != "none" {
 		applyCacheStrategy(&req, cacheStrategy)

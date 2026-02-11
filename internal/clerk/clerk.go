@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -56,10 +57,18 @@ type AccountInfo struct {
 }
 
 func FetchAccountInfo(clientCookie string) (*AccountInfo, error) {
-	return FetchAccountInfoWithProject(clientCookie, "")
+	return FetchAccountInfoWithProjectAndSession(clientCookie, "", "")
 }
 
 func FetchAccountInfoWithProject(clientCookie string, customProjectID string) (*AccountInfo, error) {
+	return FetchAccountInfoWithProjectAndSession(clientCookie, "", customProjectID)
+}
+
+func FetchAccountInfoWithSession(clientCookie string, sessionCookie string) (*AccountInfo, error) {
+	return FetchAccountInfoWithProjectAndSession(clientCookie, sessionCookie, "")
+}
+
+func FetchAccountInfoWithProjectAndSession(clientCookie string, sessionCookie string, customProjectID string) (*AccountInfo, error) {
 	url := fmt.Sprintf("%s/v1/client?__clerk_api_version=%s&_clerk_js_version=%s", ClerkBaseURL, ClerkAPIVersion, ClerkJSVersion)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -72,6 +81,9 @@ func FetchAccountInfoWithProject(clientCookie string, customProjectID string) (*
 	req.Header.Set("Origin", "https://www.orchids.app")
 	req.Header.Set("Referer", "https://www.orchids.app/")
 	req.AddCookie(&http.Cookie{Name: "__client", Value: clientCookie})
+	if strings.TrimSpace(sessionCookie) != "" {
+		req.AddCookie(&http.Cookie{Name: "__session", Value: sessionCookie})
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -136,13 +148,12 @@ func ParseClientCookies(input string) (clientJWT string, sessionJWT string, err 
 		if err != nil {
 			return "", "", err
 		}
-		if !isLikelyJWT(client) {
-			return "", "", fmt.Errorf("invalid __client value")
+		client = normalizeCookieTokenValue(client)
+		if client == "" {
+			return "", "", fmt.Errorf("missing __client value")
 		}
 		session, _ := extractCookieValue(trimmed, "__session")
-		if session != "" && !isLikelyJWT(session) {
-			return "", "", fmt.Errorf("invalid __session value")
-		}
+		session = normalizeCookieTokenValue(session)
 		return client, session, nil
 	}
 
@@ -159,20 +170,55 @@ func ParseClientCookies(input string) (clientJWT string, sessionJWT string, err 
 		return trimmed, "", nil
 	}
 
+	if token := normalizeCookieTokenValue(trimmed); isLikelyOpaqueClientToken(token) {
+		return token, "", nil
+	}
+
 	return "", "", fmt.Errorf("unsupported client cookie format")
 }
 
 func extractCookieValue(input string, name string) (string, error) {
-	key := name + "="
-	idx := strings.Index(input, key)
-	if idx < 0 {
-		return "", nil
+	parts := strings.Split(input, ";")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(kv[0]), name) {
+			return strings.TrimSpace(kv[1]), nil
+		}
 	}
-	value := input[idx+len(key):]
-	if end := strings.Index(value, ";"); end >= 0 {
-		value = value[:end]
+	return "", nil
+}
+
+func normalizeCookieTokenValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'")
+	if value == "" {
+		return ""
 	}
-	return strings.TrimSpace(value), nil
+	if decoded, err := url.QueryUnescape(value); err == nil && strings.TrimSpace(decoded) != "" {
+		value = strings.TrimSpace(decoded)
+		value = strings.Trim(value, "\"'")
+	}
+	return strings.TrimSpace(value)
+}
+
+func isLikelyOpaqueClientToken(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	if len(value) < 16 {
+		return false
+	}
+	if strings.ContainsAny(value, " ;\t\r\n") {
+		return false
+	}
+	return true
 }
 
 func ParseSessionInfoFromJWT(sessionJWT string) (sessionID string, userID string) {

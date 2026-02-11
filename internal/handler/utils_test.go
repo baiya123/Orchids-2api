@@ -3,7 +3,10 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"orchids-api/internal/prompt"
 )
 
 func TestConversationKeyForRequestPriority(t *testing.T) {
@@ -136,6 +139,77 @@ func TestExtractWorkdirFromRequestPriority(t *testing.T) {
 			got, src := extractWorkdirFromRequest(r, tt.req)
 			if got != tt.want || src != tt.src {
 				t.Fatalf("extractWorkdirFromRequest() = (%q,%q), want (%q,%q)", got, src, tt.want, tt.src)
+			}
+		})
+	}
+}
+
+func TestIsTopicClassifierRequest(t *testing.T) {
+	req := ClaudeRequest{
+		System: SystemItems{
+			{
+				Type: "text",
+				Text: "Analyze if this message indicates a new conversation topic. Format your response as a JSON object with two fields: 'isNewTopic' and 'title'.",
+			},
+		},
+	}
+	if !isTopicClassifierRequest(req) {
+		t.Fatalf("expected topic classifier request to be detected")
+	}
+
+	nonClassifier := ClaudeRequest{
+		System: SystemItems{{Type: "text", Text: "You are Claude Code"}},
+	}
+	if isTopicClassifierRequest(nonClassifier) {
+		t.Fatalf("expected non-topic-classifier request")
+	}
+}
+
+func TestClassifyTopicRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		messages  []prompt.Message
+		wantIsNew bool
+	}{
+		{
+			name: "single user message treated as new topic",
+			messages: []prompt.Message{
+				{Role: "user", Content: prompt.MessageContent{Text: "帮我用python写一个计算器"}},
+			},
+			wantIsNew: true,
+		},
+		{
+			name: "same user message treated as same topic",
+			messages: []prompt.Message{
+				{Role: "user", Content: prompt.MessageContent{Text: "帮我用python写一个计算器"}},
+				{Role: "assistant", Content: prompt.MessageContent{Text: "好的"}},
+				{Role: "user", Content: prompt.MessageContent{Text: "帮我用python写一个计算器"}},
+			},
+			wantIsNew: false,
+		},
+		{
+			name: "greeting treated as same topic",
+			messages: []prompt.Message{
+				{Role: "user", Content: prompt.MessageContent{Text: "帮我用python写一个计算器"}},
+				{Role: "assistant", Content: prompt.MessageContent{Text: "好的"}},
+				{Role: "user", Content: prompt.MessageContent{Text: "hi"}},
+			},
+			wantIsNew: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := ClaudeRequest{Messages: tt.messages}
+			gotNew, title := classifyTopicRequest(req)
+			if gotNew != tt.wantIsNew {
+				t.Fatalf("classifyTopicRequest() isNewTopic = %v, want %v", gotNew, tt.wantIsNew)
+			}
+			if gotNew && strings.TrimSpace(title) == "" {
+				t.Fatalf("expected non-empty title for new topic")
+			}
+			if !gotNew && title != "" {
+				t.Fatalf("expected empty title when not a new topic, got %q", title)
 			}
 		})
 	}
