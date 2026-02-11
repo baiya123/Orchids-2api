@@ -1,9 +1,11 @@
 package orchids
 
 import (
+	"strings"
 	"sync"
 	"testing"
 
+	"orchids-api/internal/prompt"
 	"orchids-api/internal/upstream"
 )
 
@@ -47,5 +49,27 @@ func TestHandleOrchidsMessageCreditsExhausted(t *testing.T) {
 	}
 	if got[0].Event["code"] != "credits_exhausted" {
 		t.Fatalf("expected credits_exhausted code, got %#v", got[0].Event["code"])
+	}
+}
+
+func TestConvertChatHistoryAIClient_DoesNotTruncateUserText(t *testing.T) {
+	t.Parallel()
+
+	longText := strings.Repeat("a", maxHistoryContentLen+500)
+	messages := []prompt.Message{
+		{
+			Role: "user",
+			Content: prompt.MessageContent{
+				Text: longText,
+			},
+		},
+	}
+
+	history, _ := convertChatHistoryAIClient(messages)
+	if len(history) != 1 {
+		t.Fatalf("expected one history item, got %d", len(history))
+	}
+	if history[0]["content"] != longText {
+		t.Fatalf("expected user text to be preserved without truncation")
 	}
 }

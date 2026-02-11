@@ -117,55 +117,32 @@ func buildLocalAssistantPrompt(systemText string, userText string, model string,
 </CRITICAL_OVERRIDE>
 
 <claude_code_client_assistant>
-你是一个运行在客户端环境中的代码助手。你通过一组原生工具与文件系统和终端进行交互。
+你是运行在本地客户端环境的代码助手，只能使用这些原生工具：
+Read / Write / Edit / Bash / Glob / Grep / TodoWrite。
 
-## 可用工具（仅限这些）
+硬约束：
+- 所有操作必须在本地文件系统执行，禁止调用云端 API 或远程工具。
+- 禁止调用 Kiro/Orchids 平台专属工具，禁止假设网络可用。
+- 不要输出或提及 Kiro、Orchids、Antigravity 等内部名称。
+- 文件修改遵循“先 Read 再 Write/Edit”；Read 失败（不存在）后才允许 Write。
+- 若 Tool Results 已覆盖用户要求范围，不要再次 Read；避免自相矛盾。
 
-| 工具 | 用途 |
-|------|------|
-| Read | 读取本地文件 |
-| Write | 写入本地文件 |
-| Edit | 编辑本地文件 |
-| Bash | 执行本地shell命令 |
-| Glob | 按模式匹配文件 |
-| Grep | 搜索文件内容 |
-| TodoWrite | 任务列表 |
+工作方式：
+1. 先 Glob/Grep 识别范围；
+2. 再 Read 关键文件；
+3. 用 Edit/Write 修改；
+4. 用 Bash 运行验证命令。
 
-## 禁止行为（强制）
-
-- **禁止**调用任何云端API或远程工具
-- **禁止**使用 Web_Search、SQL、SetupSupabase 等云服务工具
-- **禁止**调用Kiro或Orchids平台专属工具
-- **禁止**假设网络连接可用
-- **禁止**输出或提及Kiro、Orchids、Antigravity 等内部名称
-- 所有操作必须在本地文件系统完成
-
-## 工作流程
-
-1. 使用 Glob 了解项目结构
-2. 使用 Read 读取相关文件
-3. 使用 Edit 或 Write 修改文件
-4. 使用 Bash 执行测试/构建命令
-5. 使用 Grep 搜索代码
-
-工具语义（断言）：Read 的 offset 为 1 基行号；同一响应内只能发起一次 Read，二次 Read 视为错误。
-若 Tool Results 已覆盖用户要求的行/范围，禁止再次 Read；否则 Read 一次后直接回答。
-避免自相矛盾：不要同时要求"必须再读"与"已读结果"。
-确保路径来自于本地文件系统，禁止使用云端路径。
-
-## 响应风格
-
-	- 简洁直接，避免冗余解释
-	- 完成任务后简短说明所做更改
-	- 工具执行成功后只输出一次简短结果，禁止“先预告再复述”
-	- 删除命令遇到“no matches found / No such file or directory”时视为幂等无操作，不要重复执行同一删除命令
-	- 命令出现交互输入错误（如 EOFError: EOF when reading a line）时，不要重复执行同一命令，直接说明需交互环境并给出非交互替代方式
-	- 遇到问题时明确说明并提供解决方案
-	- 对话过长时自动压缩上下文：输出精简摘要后继续；摘要需保留当前需求、关键约束、已确定结论与待办
-	</claude_code_client_assistant>
-	`)
+输出要求：
+- 简洁直接，优先给结果与改动说明。
+- 工具执行成功后只输出一次简短结果，禁止“先预告再复述”。
+- 当上下文变长时，优先用 Read/Grep 只读取必要片段，并生成“当前状态摘要”；后续轮次引用摘要而不是重复粘贴整段结果。
+- 删除命令遇到 “no matches found / No such file or directory” 视为幂等无操作，不要重复执行。
+- 命令出现交互输入错误（如 EOFError: EOF when reading a line）时，不要重跑同命令，给出非交互替代方案。
+</claude_code_client_assistant>
+`)
 	b.WriteString("\n<guidelines>\n")
-	b.WriteString("- Respond in the same language the user uses (e.g., Chinese input → Chinese response).\n")
+	b.WriteString("- Respond in the same language the user uses.\n")
 	b.WriteString("- Focus on the user's actual request without assumptions about their tech stack.\n")
 	b.WriteString("- For coding tasks, support any language or framework the user is working with.\n")
 	b.WriteString("- Use ONLY Claude Code native tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite.\n")
@@ -211,15 +188,14 @@ func BuildAIClientPromptAndHistory(messages []prompt.Message, system []prompt.Sy
 	userText = stripSystemReminders(userText)
 	currentUserIdx := findCurrentUserMessageIndex(messages)
 	if currentUserIdx >= 0 && !hasUserPlainText(messages[currentUserIdx]) {
-		previousText := findLatestUserText(messages[:currentUserIdx])
-		if previousText != "" {
-			if strings.TrimSpace(userText) != "" {
-				userText = previousText + "\n\n[Tool Results]\n" + userText
-			} else {
+		if strings.TrimSpace(userText) == "" {
+			previousText := findLatestUserText(messages[:currentUserIdx])
+			if previousText != "" {
 				userText = previousText
 			}
 		}
 	}
+
 	var historyMessages []prompt.Message
 	if currentUserIdx >= 0 {
 		historyMessages = messages[:currentUserIdx]
@@ -315,12 +291,9 @@ func condenseSystemContext(text string) string {
 	}
 
 	condensed := strings.TrimSpace(strings.Join(result, "\n"))
-	// 如果精简后内容太短（可能全被丢弃了），回退到原始文本的前 4000 字符
+	// 如果精简后内容太短（可能全被丢弃了），回退到原始文本
 	if len(condensed) < 50 && len(text) > 50 {
-		if len(text) > 4000 {
-			return strings.TrimSpace(text[:4000]) + "\n..."
-		}
-		return text
+		condensed = text
 	}
 	return condensed
 }
@@ -808,12 +781,19 @@ func formatToolResultContentLocal(content interface{}) string {
 
 // truncateHistoryContent 截断单条 chatHistory 消息内容，防止上游超时
 func truncateHistoryContent(text string) string {
-	if len(text) <= maxHistoryContentLen {
+	return truncateTextWithEllipsis(text, maxHistoryContentLen)
+}
+
+func truncateTextWithEllipsis(text string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(text) <= maxLen {
 		return text
 	}
 	runes := []rune(text)
-	if len(runes) <= maxHistoryContentLen {
+	if len(runes) <= maxLen {
 		return text
 	}
-	return string(runes[:maxHistoryContentLen]) + "…[truncated]"
+	return string(runes[:maxLen]) + "…[truncated]"
 }

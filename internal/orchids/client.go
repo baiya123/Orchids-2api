@@ -158,6 +158,7 @@ func NewFromAccount(acc *store.Account, base *config.Config) *Client {
 		cfg.OrchidsAPIBaseURL = base.OrchidsAPIBaseURL
 		cfg.OrchidsWSURL = base.OrchidsWSURL
 		cfg.OrchidsAPIVersion = base.OrchidsAPIVersion
+		cfg.OrchidsImpl = base.OrchidsImpl
 
 		cfg.OrchidsRunAllowlist = base.OrchidsRunAllowlist
 		cfg.OrchidsFSIgnore = base.OrchidsFSIgnore // Critical for performance
@@ -167,6 +168,9 @@ func NewFromAccount(acc *store.Account, base *config.Config) *Client {
 		cfg.MaxRetries = base.MaxRetries
 		cfg.RetryDelay = base.RetryDelay
 		cfg.RequestTimeout = base.RequestTimeout
+		cfg.SuppressThinking = base.SuppressThinking
+		cfg.OrchidsMaxToolResults = base.OrchidsMaxToolResults
+		cfg.OrchidsMaxHistoryMessages = base.OrchidsMaxHistoryMessages
 
 		// Copy Proxy Config
 		cfg.ProxyHTTP = base.ProxyHTTP

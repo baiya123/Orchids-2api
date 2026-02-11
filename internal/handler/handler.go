@@ -374,11 +374,8 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		// Warp passthrough mode: do not trim history/tool results.
 		slog.Debug("Checkpoint: warp passthrough, skip trim/sanitize")
 	} else {
-		// Orchids: Compress HUGE tool results (>100KB) to prevent upstream 413/Timeout
-		// 100KB limit is generous enough for most code but prevents MB-sized payloads.
-		slog.Debug("Checkpoint: compressing tool results")
-		compressed, _ := compressToolResults(req.Messages, 102400, "orchids")
-		req.Messages = compressed
+		// Orchids: do not trim message/tool_result content to preserve full context.
+		slog.Debug("Checkpoint: orchids passthrough, skip context trimming")
 		if sanitized, changed := sanitizeSystemItems(req.System, false, h.config); changed {
 			req.System = sanitized
 			slog.Info("系统提示已移除 cc_entrypoint", "mode", h.config.OrchidsCCEntrypointMode, "warp", false)
