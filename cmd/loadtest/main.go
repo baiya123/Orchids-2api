@@ -44,8 +44,14 @@ func main() {
 		cfg.BaseURL = loadtest.DetectBaseURL()
 	}
 
-	if cfg.Mode != loadtest.ModeExternal {
-		fmt.Fprintln(os.Stderr, "Only -mode=external is implemented for now")
+	var self *loadtest.SelfServer
+	if cfg.Mode == loadtest.ModeSelf {
+		self = loadtest.StartSelfServer()
+		defer self.Close()
+		cfg.BaseURL = self.BaseURL
+	}
+	if cfg.Mode != loadtest.ModeExternal && cfg.Mode != loadtest.ModeSelf {
+		fmt.Fprintln(os.Stderr, "Invalid -mode; use external or self")
 		os.Exit(2)
 	}
 
