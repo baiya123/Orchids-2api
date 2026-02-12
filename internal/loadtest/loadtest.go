@@ -65,14 +65,14 @@ type Result struct {
 	StartedAt time.Time
 	EndedAt   time.Time
 
-	Total       int64
-	Success     int64
-	Empty       int64
-	Errors      int64
-	HTTP5xx     int64
-	HTTP4xx     int64
-	HTTP429     int64
-	Canceled    int64
+	Total    int64
+	Success  int64
+	Empty    int64
+	Errors   int64
+	HTTP5xx  int64
+	HTTP4xx  int64
+	HTTP429  int64
+	Canceled int64
 
 	LatenciesMs []int64
 
@@ -112,13 +112,12 @@ func DefaultConfig() Config {
 }
 
 type runner struct {
-	cfg    Config
-	hc     *http.Client
-	rngMu  sync.Mutex
-	rng    *rand.Rand
-	res    *Result
-	latMu  sync.Mutex
-	byScMu sync.Mutex
+	cfg   Config
+	hc    *http.Client
+	rngMu sync.Mutex
+	rng   *rand.Rand
+	res   *Result
+	latMu sync.Mutex
 }
 
 func Run(ctx context.Context, cfg Config) (*Result, error) {
@@ -153,7 +152,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	r := &runner{
 		cfg: cfg,
-		hc: &http.Client{Timeout: cfg.RequestTimeout},
+		hc:  &http.Client{Timeout: cfg.RequestTimeout},
 		rng: rand.New(rand.NewSource(cfg.Seed)),
 		res: &Result{StartedAt: time.Now(), ByScenario: make(map[Scenario]*ScenarioResult)},
 	}

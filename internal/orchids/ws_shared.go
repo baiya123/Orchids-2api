@@ -1038,11 +1038,6 @@ func formatToolResultContentLocal(content interface{}) string {
 	}
 }
 
-// truncateHistoryContent 截断单条 chatHistory 消息内容，防止上游超时
-func truncateHistoryContent(text string) string {
-	return truncateTextWithEllipsis(text, maxHistoryContentLen)
-}
-
 func truncateTextWithEllipsis(text string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""

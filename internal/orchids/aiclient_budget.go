@@ -16,27 +16,6 @@ const (
 	aiClientSummaryMaxDepth   = 2
 )
 
-// truncateAIClientHistory truncates each history item's content to reduce large tool outputs.
-// It keeps the semantics but avoids multi-thousand-line blobs.
-func truncateAIClientHistory(history []map[string]string) []map[string]string {
-	if len(history) == 0 {
-		return history
-	}
-	out := make([]map[string]string, 0, len(history))
-	for _, item := range history {
-		role := strings.TrimSpace(item["role"])
-		content := item["content"]
-		// Trim and truncate aggressively. Tool outputs can be enormous.
-		content = strings.TrimSpace(content)
-		content = truncateTextWithEllipsis(content, 1800)
-		out = append(out, map[string]string{
-			"role":    role,
-			"content": content,
-		})
-	}
-	return out
-}
-
 // enforceAIClientBudget enforces a hard max token budget for prompt+chatHistory.
 // It tries "compress first, trim last":
 // 1) compress single long messages,

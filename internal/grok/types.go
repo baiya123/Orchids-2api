@@ -35,12 +35,6 @@ type ImagesGenerationsRequest struct {
 	ResponseFormat string `json:"response_format"`
 }
 
-type upstreamLine struct {
-	Result struct {
-		Response map[string]interface{} `json:"response"`
-	} `json:"result"`
-}
-
 func (r *ChatCompletionsRequest) Validate() error {
 	if strings.TrimSpace(r.Model) == "" {
 		return fmt.Errorf("model is required")

@@ -106,9 +106,7 @@ func trimSystemContextToBudget(text string, maxTokens int) string {
 	builder := func(head, imp, tail []string) string {
 		var out []string
 		appendLines := func(block []string) {
-			for _, ln := range block {
-				out = append(out, ln)
-			}
+			out = append(out, block...)
 		}
 		appendLines(head)
 		if len(imp) > 0 {

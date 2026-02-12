@@ -329,10 +329,7 @@ func toolResultDedupKey(result warpToolResult) string {
 
 func shouldDedupToolResultByContent(content string) bool {
 	lower := strings.ToLower(content)
-	if strings.Contains(lower, "eoferror: eof when reading a line") {
-		return true
-	}
-	return false
+	return strings.Contains(lower, "eoferror: eof when reading a line")
 }
 
 func isBenignNoopShellError(lower string) bool {
