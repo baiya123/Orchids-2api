@@ -19,6 +19,18 @@ import (
 	"orchids-api/internal/upstream"
 )
 
+func mapKeys(m map[string]interface{}) []string {
+	if m == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Order isn't critical; keep lightweight (avoid importing sort).
+	return keys
+}
+
 type streamHandler struct {
 	// Configuration
 	config           *config.Config
@@ -1290,7 +1302,23 @@ func extractEventMessage(event map[string]interface{}, fallback string) string {
 
 func (h *streamHandler) handleMessage(msg upstream.SSEMessage) {
 	if h.config.DebugEnabled && msg.Type != "content_block_delta" {
-		slog.Debug("Incoming SSE", "type", msg.Type)
+		fields := []any{"type", msg.Type}
+		if msg.Event != nil {
+			// Avoid leaking secrets in logs: only log high-level shape.
+			evtType, _ := msg.Event["type"].(string)
+			fields = append(fields, "event_type", evtType)
+			if delta, ok := msg.Event["delta"]; ok {
+				fields = append(fields, "has_delta", delta != nil)
+			}
+			if data, ok := msg.Event["data"].(map[string]interface{}); ok {
+				fields = append(fields, "data_keys", mapKeys(data))
+				if msgStr, ok := data["message"].(string); ok {
+					fields = append(fields, "data_message_len", len(msgStr))
+				}
+			}
+			fields = append(fields, "event_keys", mapKeys(msg.Event))
+		}
+		slog.Debug("Incoming SSE", fields...)
 	}
 	h.mu.Lock()
 	done := h.hasReturn

@@ -216,8 +216,13 @@ func (c *Client) GetToken() (string, error) {
 				c.persistAccountInfo(info)
 				if strings.TrimSpace(info.JWT) != "" && strings.TrimSpace(info.SessionID) != "" {
 					setCachedToken(info.SessionID, info.JWT)
+					slog.Debug("Orchids token source", "source", "clerk_last_active_token", "session_id", info.SessionID, "has_session_cookie", strings.TrimSpace(c.account.SessionCookie) != "")
 					return info.JWT, nil
 				}
+				// Info returned but missing JWT/sessionID.
+				slog.Warn("Orchids token fetch: clerk info missing jwt/session", "has_jwt", strings.TrimSpace(info.JWT) != "", "session_id", info.SessionID)
+			} else if err != nil {
+				slog.Warn("Orchids token fetch: clerk info failed", "error", err)
 			}
 			// If Clerk fetch fails, fall back to any stored token below.
 		}
