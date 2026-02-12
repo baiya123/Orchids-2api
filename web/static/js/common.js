@@ -2,7 +2,13 @@
 
 // Show toast notification
 function showToast(msg, type = 'success') {
-  const container = document.getElementById("toastContainer") || document.body;
+  let container = document.getElementById("toastContainer");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toastContainer";
+    container.className = "toast-container";
+    document.body.appendChild(container);
+  }
   const toast = document.createElement("div");
   toast.className = "toast";
   const color = type === 'success' ? '#34d399' : type === 'info' ? '#38bdf8' : '#fb7185';
