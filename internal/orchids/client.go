@@ -214,10 +214,19 @@ func (c *Client) GetToken() (string, error) {
 				c.applyAccountInfo(info)
 				// Persist rotated __client and identity fields back to store account snapshot
 				c.persistAccountInfo(info)
-				if strings.TrimSpace(info.JWT) != "" && strings.TrimSpace(info.SessionID) != "" {
-					setCachedToken(info.SessionID, info.JWT)
-					slog.Debug("Orchids token source", "source", "clerk_last_active_token", "session_id", info.SessionID, "has_session_cookie", strings.TrimSpace(c.account.SessionCookie) != "")
-					return info.JWT, nil
+				if strings.TrimSpace(info.SessionID) != "" {
+					// Ensure config has the latest session id/cookies then fetch a bearer token
+					// via the official Clerk tokens endpoint.
+					c.config.SessionID = strings.TrimSpace(info.SessionID)
+					bearer, tokErr := c.fetchToken()
+					if tokErr == nil && strings.TrimSpace(bearer) != "" {
+						setCachedToken(info.SessionID, bearer)
+						slog.Debug("Orchids token source", "source", "clerk_session_tokens_endpoint", "session_id", info.SessionID, "has_session_cookie", strings.TrimSpace(c.account.SessionCookie) != "")
+						return bearer, nil
+					}
+					if tokErr != nil {
+						slog.Warn("Orchids token fetch: tokens endpoint failed", "session_id", info.SessionID, "error", tokErr)
+					}
 				}
 				// Info returned but missing JWT/sessionID.
 				slog.Warn("Orchids token fetch: clerk info missing jwt/session", "has_jwt", strings.TrimSpace(info.JWT) != "", "session_id", info.SessionID)
