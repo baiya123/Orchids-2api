@@ -5,7 +5,8 @@ import (
 	"net/http"
 
 	"orchids-api/internal/debug"
-	"orchids-api/internal/prompt"
+	"orchids-api/internal/orchids"
+	"orchids-api/internal/tiktoken"
 )
 
 // HandleCountTokens handles /v1/messages/count_tokens requests.
@@ -25,29 +26,23 @@ func (h *Handler) HandleCountTokens(w http.ResponseWriter, r *http.Request) {
 	defer logger.Close()
 	logger.LogIncomingRequest(req)
 
-	conversationKey := conversationKeyForRequest(r, req)
-	opts := prompt.PromptOptions{
-		Context:          r.Context(),
-		ConversationID:   conversationKey,
-		MaxTokens:        h.config.ContextMaxTokens,
-		SummaryMaxTokens: h.config.ContextSummaryMaxTokens,
-		KeepTurns:        h.config.ContextKeepTurns,
-		SummaryCache:     h.summaryCache,
+	maxTokens := 12000
+	if h.config != nil && h.config.ContextMaxTokens > 0 {
+		maxTokens = h.config.ContextMaxTokens
 	}
+	builtPrompt, aiClientHistory := orchids.BuildAIClientPromptAndHistory(req.Messages, req.System, req.Model, true /* noThinking */, "" /* workdir */, maxTokens)
 
-	builtPrompt := prompt.BuildPromptV2WithOptions(prompt.ClaudeAPIRequest{
-		Model:    req.Model,
-		Messages: req.Messages,
-		System:   req.System,
-		Tools:    req.Tools,
-		Stream:   false,
-	}, opts)
-
-	inputTokens := h.estimateInputTokens(r.Context(), req.Model, builtPrompt)
+	// Estimate tokens for prompt + chatHistory (aiclient format)
+	totalTokens := tiktoken.EstimateTextTokens(builtPrompt)
+	for _, item := range aiClientHistory {
+		if c, ok := item["content"]; ok {
+			totalTokens += tiktoken.EstimateTextTokens(c) + 15
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]int{
-		"input_tokens": inputTokens,
+		"input_tokens": totalTokens,
 	}); err != nil {
 		// Log error but we can't do much else since headers are written
 		_ = err

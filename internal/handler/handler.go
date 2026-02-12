@@ -423,15 +423,9 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(effectiveWorkdir) != "" {
 		summaryKey = conversationKey + "|" + strings.TrimSpace(effectiveWorkdir)
 	}
-	opts := prompt.PromptOptions{
-		Context:          r.Context(),
-		ConversationID:   summaryKey,
-		MaxTokens:        h.config.ContextMaxTokens,
-		SummaryMaxTokens: h.config.ContextSummaryMaxTokens,
-		KeepTurns:        h.config.ContextKeepTurns,
-		SummaryCache:     h.summaryCache,
-		ProjectRoot:      effectiveWorkdir,
-	}
+	// NOTE: AIClient mode handles its own context budgeting; legacy PromptOptions are deprecated.
+	_ = summaryKey
+	_ = effectiveWorkdir
 
 	slog.Debug("Starting prompt build...", "conversation_id", conversationKey)
 	// Orchids: always use AIClient mode (other implementations are deprecated/removed).
@@ -445,25 +439,15 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if isOrchidsAIClient {
 		builtPrompt, aiClientHistory = orchids.BuildAIClientPromptAndHistory(req.Messages, req.System, req.Model, noThinking, effectiveWorkdir, h.config.ContextMaxTokens)
 	} else {
-		builtPrompt = prompt.BuildPromptV2WithOptions(prompt.ClaudeAPIRequest{
-			Model:    req.Model,
-			Messages: req.Messages,
-			System:   req.System,
-			Tools:    effectiveTools,
-			Stream:   req.Stream,
-		}, opts)
+		// Non-AIClient routing is deprecated/removed.
+		builtPrompt, aiClientHistory = orchids.BuildAIClientPromptAndHistory(req.Messages, req.System, req.Model, noThinking, effectiveWorkdir, h.config.ContextMaxTokens)
 	}
 	buildDuration := time.Since(startBuild)
 	slog.Debug("Prompt build completed", "duration", buildDuration)
 	if h.config.DebugEnabled {
-		buildLabel := "BuildPromptV2WithOptions"
-		if isOrchidsAIClient {
-			buildLabel = "BuildAIClientPromptAndHistory"
-		}
+		buildLabel := "BuildAIClientPromptAndHistory"
 		slog.Info("[Performance] "+buildLabel, "duration", buildDuration)
-		if opts.ProjectContext != "" {
-			slog.Debug("Project context injected", "context", opts.ProjectContext)
-		}
+		// Project context injection is deprecated (non-AIClient path removed).
 	}
 
 	if h.summaryStats != nil && h.summaryLog {
