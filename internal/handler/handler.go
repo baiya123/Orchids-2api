@@ -624,13 +624,28 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			if sender, ok := apiClient.(UpstreamPayloadClient); ok {
 				slog.Info("Using SendRequestWithPayload")
 				warpBatches := [][]prompt.Message{upstreamMessages}
-				if isWarpRequest && h.config.WarpSplitToolResults {
+				if isWarpRequest {
+					// Enforce hard token budget for Warp requests to avoid runaway context cost.
 					if _, isWarp := apiClient.(*warp.Client); isWarp {
-						batches, total := splitWarpToolResults(upstreamMessages, 1)
-						if len(batches) > 1 {
-							slog.Info("Warp 工具结果分批发送", "total_tool_results", total, "batches", len(batches))
+						budget := h.config.ContextMaxTokens
+						if budget <= 0 {
+							budget = 12000
 						}
-						warpBatches = batches
+						trimmed, before, after, compressed, dropped := enforceWarpBudget(builtPrompt, upstreamMessages, budget)
+						if before != after || compressed > 0 || dropped > 0 {
+							slog.Info("Warp budget applied", "budget", 12000, "tokens_before", before, "tokens_after", after, "compressed_blocks", compressed, "dropped_messages", dropped)
+						}
+						upstreamMessages = trimmed
+					}
+
+					if h.config.WarpSplitToolResults {
+						if _, isWarp := apiClient.(*warp.Client); isWarp {
+							batches, total := splitWarpToolResults(upstreamMessages, 1)
+							if len(batches) > 1 {
+								slog.Info("Warp 工具结果分批发送", "total_tool_results", total, "batches", len(batches))
+							}
+							warpBatches = batches
+						}
 					}
 				}
 				noopHandler := func(msg upstream.SSEMessage) {
