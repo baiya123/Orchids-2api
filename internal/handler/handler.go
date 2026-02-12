@@ -632,8 +632,18 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 							budget = 12000
 						}
 						trimmed, before, after, compressed, dropped := enforceWarpBudget(builtPrompt, upstreamMessages, budget)
-						if before != after || compressed > 0 || dropped > 0 {
-							slog.Info("Warp budget applied", "budget", 12000, "tokens_before", before, "tokens_after", after, "compressed_blocks", compressed, "dropped_messages", dropped)
+						if before.Total != after.Total || compressed > 0 || dropped > 0 {
+							slog.Info(
+							"Warp budget applied",
+							"budget", 12000,
+							"tokens_before", before.Total,
+							"tokens_after", after.Total,
+							"prompt_tokens", after.PromptTokens,
+							"messages_tokens", after.MessagesTokens,
+							"tool_tokens", after.ToolTokens,
+							"compressed_blocks", compressed,
+							"dropped_messages", dropped,
+						)
 						}
 						upstreamMessages = trimmed
 					}

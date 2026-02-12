@@ -11,7 +11,14 @@ import (
 // Strategy:
 // 1) Compress tool_result blocks (largest offenders).
 // 2) Drop oldest messages until within budget, always keeping the last user message.
-func enforceWarpBudget(builtPrompt string, messages []prompt.Message, maxTokens int) (trimmed []prompt.Message, before int, after int, compressedBlocks int, droppedMessages int) {
+type warpTokenBreakdown struct {
+	PromptTokens   int
+	MessagesTokens int
+	ToolTokens     int
+	Total          int
+}
+
+func enforceWarpBudget(builtPrompt string, messages []prompt.Message, maxTokens int) (trimmed []prompt.Message, before warpTokenBreakdown, after warpTokenBreakdown, compressedBlocks int, droppedMessages int) {
 	budget := maxTokens
 	if budget <= 0 {
 		budget = 12000
@@ -23,14 +30,14 @@ func enforceWarpBudget(builtPrompt string, messages []prompt.Message, maxTokens 
 	// Start with tool_result compression.
 	compressed, compressedCount := compressToolResults(messages, 1800, "warp")
 
-	est := estimateWarpTokens(builtPrompt, compressed)
-	if est <= budget {
-		return compressed, est, est, compressedCount, 0
+	beforeBD := estimateWarpTokensBreakdown(builtPrompt, compressed)
+	if beforeBD.Total <= budget {
+		return compressed, beforeBD, beforeBD, compressedCount, 0
 	}
 
 	// Drop oldest messages until within budget.
 	work := cloneMessages(compressed)
-	beforeTokens := est
+	beforeTokens := beforeBD
 
 	// Find last user message index.
 	lastUser := -1
@@ -47,8 +54,8 @@ func enforceWarpBudget(builtPrompt string, messages []prompt.Message, maxTokens 
 	start := 0
 	for start < lastUser && len(work[start:]) > 1 {
 		testMsgs := work[start+1:]
-		est = estimateWarpTokens(builtPrompt, testMsgs)
-		if est <= budget {
+		bd := estimateWarpTokensBreakdown(builtPrompt, testMsgs)
+		if bd.Total <= budget {
 			start++
 			break
 		}
@@ -58,35 +65,36 @@ func enforceWarpBudget(builtPrompt string, messages []prompt.Message, maxTokens 
 	if len(trimmed) == 0 {
 		trimmed = work[len(work)-1:]
 	}
-	afterTokens := estimateWarpTokens(builtPrompt, trimmed)
+	afterTokens := estimateWarpTokensBreakdown(builtPrompt, trimmed)
 	return trimmed, beforeTokens, afterTokens, compressedCount, start
 }
 
-func estimateWarpTokens(builtPrompt string, messages []prompt.Message) int {
-	total := tiktoken.EstimateTextTokens(builtPrompt) + 200
+func estimateWarpTokensBreakdown(builtPrompt string, messages []prompt.Message) warpTokenBreakdown {
+	bd := warpTokenBreakdown{}
+	bd.PromptTokens = tiktoken.EstimateTextTokens(builtPrompt)
+	// Conservative wrapper overhead.
+	overhead := 200
+
 	for _, m := range messages {
 		if m.Content.IsString() {
-			total += tiktoken.EstimateTextTokens(strings.TrimSpace(m.Content.GetText())) + 15
+			bd.MessagesTokens += tiktoken.EstimateTextTokens(strings.TrimSpace(m.Content.GetText())) + 15
 			continue
 		}
-		// blocks
 		for _, b := range m.Content.GetBlocks() {
 			switch b.Type {
 			case "text":
-				total += tiktoken.EstimateTextTokens(strings.TrimSpace(b.Text)) + 10
+				bd.MessagesTokens += tiktoken.EstimateTextTokens(strings.TrimSpace(b.Text)) + 10
 			case "tool_result":
-				// tool results can be huge; estimate by marshaling to string-ish
 				if s, ok := b.Content.(string); ok {
-					total += tiktoken.EstimateTextTokens(s) + 10
+					bd.ToolTokens += tiktoken.EstimateTextTokens(s) + 10
 				} else {
-					// fallback: small constant to avoid pathological expansions
-					total += 200
+					bd.ToolTokens += 200
 				}
 			default:
-				// tool_use/image/document
-				total += 50
+				bd.ToolTokens += 50
 			}
 		}
 	}
-	return total
+	bd.Total = bd.PromptTokens + bd.MessagesTokens + bd.ToolTokens + overhead
+	return bd
 }
