@@ -35,14 +35,6 @@ type Config struct {
 	RedisPassword             string   `json:"redis_password"`
 	RedisDB                   int      `json:"redis_db"`
 	RedisPrefix               string   `json:"redis_prefix"`
-	SummaryCacheMode          string   `json:"summary_cache_mode"`
-	SummaryCacheSize          int      `json:"summary_cache_size"`
-	SummaryCacheTTLSeconds    int      `json:"summary_cache_ttl_seconds"`
-	SummaryCacheLog           bool     `json:"summary_cache_log"`
-	SummaryCacheRedisAddr     string   `json:"summary_cache_redis_addr"`
-	SummaryCacheRedisPass     string   `json:"summary_cache_redis_password"`
-	SummaryCacheRedisDB       int      `json:"summary_cache_redis_db"`
-	SummaryCacheRedisPrefix   string   `json:"summary_cache_redis_prefix"`
 	ContextMaxTokens          int      `json:"context_max_tokens"`
 	ContextSummaryMaxTokens   int      `json:"context_summary_max_tokens"`
 	ContextKeepTurns          int      `json:"context_keep_turns"`
@@ -173,30 +165,7 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.RedisPrefix == "" {
 		cfg.RedisPrefix = "orchids:"
 	}
-	if cfg.SummaryCacheMode == "" {
-		if strings.ToLower(strings.TrimSpace(cfg.StoreMode)) == "redis" {
-			cfg.SummaryCacheMode = "redis"
-		} else {
-			cfg.SummaryCacheMode = "memory"
-		}
-	}
-	if strings.ToLower(strings.TrimSpace(cfg.SummaryCacheMode)) == "redis" {
-		if cfg.SummaryCacheRedisAddr == "" {
-			cfg.SummaryCacheRedisAddr = cfg.RedisAddr
-		}
-		if cfg.SummaryCacheRedisPass == "" {
-			cfg.SummaryCacheRedisPass = cfg.RedisPassword
-		}
-	}
-	if cfg.SummaryCacheSize == 0 {
-		cfg.SummaryCacheSize = 256
-	}
-	if cfg.SummaryCacheTTLSeconds == 0 {
-		cfg.SummaryCacheTTLSeconds = 3600
-	}
-	if cfg.SummaryCacheRedisPrefix == "" {
-		cfg.SummaryCacheRedisPrefix = "orchids:summary:"
-	}
+	// Summary cache removed.
 	if cfg.ContextMaxTokens == 0 {
 		cfg.ContextMaxTokens = 8000
 	}

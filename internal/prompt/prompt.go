@@ -1,10 +1,8 @@
 package prompt
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 )
 
 // NOTE:
@@ -78,8 +76,8 @@ func (mc MessageContent) MarshalJSON() ([]byte, error) {
 	return json.Marshal(mc.Text)
 }
 
-func (mc *MessageContent) IsString() bool { return mc.Blocks == nil }
-func (mc *MessageContent) GetText() string { return mc.Text }
+func (mc *MessageContent) IsString() bool            { return mc.Blocks == nil }
+func (mc *MessageContent) GetText() string           { return mc.Text }
 func (mc *MessageContent) GetBlocks() []ContentBlock { return mc.Blocks }
 
 // Message 消息结构
@@ -93,20 +91,4 @@ type SystemItem struct {
 	Type         string        `json:"type"`
 	Text         string        `json:"text"`
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
-}
-
-// SummaryCacheEntry is used by the summarycache subsystem.
-type SummaryCacheEntry struct {
-	Summary   string
-	Lines     []string
-	Hashes    []string
-	Budget    int
-	UpdatedAt time.Time
-}
-
-type SummaryCache interface {
-	Get(ctx context.Context, key string) (SummaryCacheEntry, bool)
-	Put(ctx context.Context, key string, entry SummaryCacheEntry)
-	GetStats(ctx context.Context) (int64, int64, error)
-	Clear(ctx context.Context) error
 }

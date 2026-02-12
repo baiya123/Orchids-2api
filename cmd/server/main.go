@@ -23,9 +23,7 @@ import (
 	"orchids-api/internal/loadbalancer"
 	"orchids-api/internal/middleware"
 	"orchids-api/internal/orchids"
-	"orchids-api/internal/prompt"
 	"orchids-api/internal/store"
-	"orchids-api/internal/summarycache"
 	"orchids-api/internal/template"
 	"orchids-api/internal/tokencache"
 	"orchids-api/internal/warp"
@@ -106,34 +104,7 @@ func main() {
 	h.SetTokenCache(tokenCache)
 	apiHandler.SetTokenCache(tokenCache)
 
-	cacheMode := strings.ToLower(cfg.SummaryCacheMode)
-	if cacheMode != "off" {
-		stats := summarycache.NewStats()
-		h.SetSummaryStats(stats)
-
-		var baseCache prompt.SummaryCache
-		switch cacheMode {
-		case "redis":
-			baseCache = summarycache.NewRedisCache(
-				cfg.SummaryCacheRedisAddr,
-				cfg.SummaryCacheRedisPass,
-				cfg.SummaryCacheRedisDB,
-				time.Duration(cfg.SummaryCacheTTLSeconds)*time.Second,
-				cfg.SummaryCacheRedisPrefix,
-			)
-		default:
-			if cfg.SummaryCacheSize > 0 {
-				baseCache = summarycache.NewMemoryCache(cfg.SummaryCacheSize, time.Duration(cfg.SummaryCacheTTLSeconds)*time.Second)
-			}
-		}
-
-		if baseCache != nil {
-			instrumented := summarycache.NewInstrumentedCache(baseCache, stats)
-			h.SetSummaryCache(instrumented)
-			apiHandler.SetSummaryCache(instrumented)
-		}
-	}
-	slog.Info("Summary cache mode", "mode", cacheMode)
+	// Summary cache disabled (removed).
 
 	// Initialize template renderer
 	tmplRenderer, err := template.NewRenderer()

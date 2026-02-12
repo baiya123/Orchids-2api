@@ -18,21 +18,19 @@ import (
 	"orchids-api/internal/clerk"
 	"orchids-api/internal/config"
 	"orchids-api/internal/orchids"
-	"orchids-api/internal/prompt"
 	"orchids-api/internal/store"
 	"orchids-api/internal/tokencache"
 	"orchids-api/internal/warp"
 )
 
 type API struct {
-	store        *store.Store
-	summaryCache prompt.SummaryCache
-	tokenCache   tokencache.Cache
-	adminUser    string
-	adminPass    string
-	configMu     sync.RWMutex
-	config       interface{} // Using interface{} to avoid circular dependency if any, or just use *config.Config
-	configPath   string      // Path to config.json
+	store      *store.Store
+	tokenCache tokencache.Cache
+	adminUser  string
+	adminPass  string
+	configMu   sync.RWMutex
+	config     interface{} // Using interface{} to avoid circular dependency if any, or just use *config.Config
+	configPath string      // Path to config.json
 }
 
 func normalizeWarpTokenInput(acc *store.Account) {
@@ -827,10 +825,6 @@ func (a *API) HandleModelByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-func (a *API) SetSummaryCache(c prompt.SummaryCache) {
-	a.summaryCache = c
 }
 
 func (a *API) SetTokenCache(c tokencache.Cache) {

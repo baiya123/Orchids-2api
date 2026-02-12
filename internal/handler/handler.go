@@ -23,7 +23,6 @@ import (
 	"orchids-api/internal/orchids"
 	"orchids-api/internal/prompt"
 	"orchids-api/internal/store"
-	"orchids-api/internal/summarycache"
 	"orchids-api/internal/tokencache"
 	"orchids-api/internal/upstream"
 	"orchids-api/internal/util"
@@ -34,9 +33,6 @@ type Handler struct {
 	config       *config.Config
 	client       UpstreamClient
 	loadBalancer *loadbalancer.LoadBalancer
-	summaryCache prompt.SummaryCache
-	summaryStats *summarycache.Stats
-	summaryLog   bool
 	tokenCache   tokencache.Cache
 
 	sessionWorkdirsMu sync.RWMutex
@@ -94,18 +90,9 @@ func NewWithLoadBalancer(cfg *config.Config, lb *loadbalancer.LoadBalancer) *Han
 		recentRequests:    make(map[string]*recentRequest),
 	}
 	if cfg != nil {
-		h.summaryLog = cfg.SummaryCacheLog
 		h.client = orchids.New(cfg)
 	}
 	return h
-}
-
-func (h *Handler) SetSummaryCache(cache prompt.SummaryCache) {
-	h.summaryCache = cache
-}
-
-func (h *Handler) SetSummaryStats(stats *summarycache.Stats) {
-	h.summaryStats = stats
 }
 
 func (h *Handler) SetTokenCache(cache tokencache.Cache) {
@@ -395,11 +382,6 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	var hitsBefore, missesBefore uint64
-	if h.summaryStats != nil && h.summaryLog {
-		hitsBefore, missesBefore = h.summaryStats.Snapshot()
-	}
-
 	suggestionMode := isSuggestionMode(req.Messages)
 	noThinking := suggestionMode || h.config.SuppressThinking
 	gateNoTools := false
@@ -448,15 +430,6 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		buildLabel := "BuildAIClientPromptAndHistory"
 		slog.Info("[Performance] "+buildLabel, "duration", buildDuration)
 		// Project context injection is deprecated (non-AIClient path removed).
-	}
-
-	if h.summaryStats != nil && h.summaryLog {
-		hitsAfter, missesAfter := h.summaryStats.Snapshot()
-		hitDelta := hitsAfter - hitsBefore
-		missDelta := missesAfter - missesBefore
-		if hitDelta > 0 || missDelta > 0 {
-			slog.Debug("summary_cache", "hit", hitDelta, "miss", missDelta)
-		}
 	}
 
 	// 映射模型
@@ -634,16 +607,16 @@ func (h *Handler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 						trimmed, before, after, compressed, dropped := enforceWarpBudget(builtPrompt, upstreamMessages, budget)
 						if before.Total != after.Total || compressed > 0 || dropped > 0 {
 							slog.Info(
-							"Warp budget applied",
-							"budget", 12000,
-							"tokens_before", before.Total,
-							"tokens_after", after.Total,
-							"prompt_tokens", after.PromptTokens,
-							"messages_tokens", after.MessagesTokens,
-							"tool_tokens", after.ToolTokens,
-							"compressed_blocks", compressed,
-							"dropped_messages", dropped,
-						)
+								"Warp budget applied",
+								"budget", 12000,
+								"tokens_before", before.Total,
+								"tokens_after", after.Total,
+								"prompt_tokens", after.PromptTokens,
+								"messages_tokens", after.MessagesTokens,
+								"tool_tokens", after.ToolTokens,
+								"compressed_blocks", compressed,
+								"dropped_messages", dropped,
+							)
 						}
 						upstreamMessages = trimmed
 					}
