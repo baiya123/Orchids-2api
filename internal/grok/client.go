@@ -230,13 +230,28 @@ func (c *Client) GetUsage(ctx context.Context, token, modelID string) (*RateLimi
 }
 
 func (c *Client) configureProxyTransport() {
-	if c.cfg == nil || strings.TrimSpace(c.cfg.ProxyHTTPS) == "" {
+	if c.cfg == nil {
 		return
 	}
-	u, err := url.Parse(strings.TrimSpace(c.cfg.ProxyHTTPS))
+
+	proxyAddr := strings.TrimSpace(c.cfg.ProxyHTTPS)
+	if proxyAddr == "" {
+		proxyAddr = strings.TrimSpace(c.cfg.ProxyHTTP)
+	}
+	if proxyAddr == "" {
+		return
+	}
+
+	u, err := url.Parse(proxyAddr)
 	if err != nil {
 		return
 	}
+
+	// Support username/password configured separately in admin UI.
+	if u.User == nil && strings.TrimSpace(c.cfg.ProxyUser) != "" {
+		u.User = url.UserPassword(strings.TrimSpace(c.cfg.ProxyUser), strings.TrimSpace(c.cfg.ProxyPass))
+	}
+
 	c.httpClient.Transport = &http.Transport{
 		Proxy: http.ProxyURL(u),
 	}
