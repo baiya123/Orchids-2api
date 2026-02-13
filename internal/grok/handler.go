@@ -559,6 +559,25 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				if len(urls) > n {
 					urls = urls[:n]
 				}
+				// If imagine didn't return http urls, we often still get assets.grok.com paths.
+				if len(urls) == 0 {
+					if len(debugAsset) > 0 {
+						for _, p := range debugAsset {
+							p = strings.TrimSpace(p)
+							if p == "" || strings.Contains(p, "grok-3") {
+								continue
+							}
+							if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+								urls = append(urls, p)
+							} else {
+								urls = append(urls, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
+							}
+							if len(urls) >= n {
+								break
+							}
+						}
+					}
+				}
 				if len(urls) == 0 {
 					emitChunk(map[string]interface{}{"content": "\n[图片生成未返回可用链接]\n"}, nil)
 				}
@@ -695,6 +714,24 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 				urls = uniqueStrings(urls)
 				if len(urls) > n {
 					urls = urls[:n]
+				}
+				if len(urls) == 0 {
+					if len(debugAsset) > 0 {
+						for _, p := range debugAsset {
+							p = strings.TrimSpace(p)
+							if p == "" || strings.Contains(p, "grok-3") {
+								continue
+							}
+							if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+								urls = append(urls, p)
+							} else {
+								urls = append(urls, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
+							}
+							if len(urls) >= n {
+								break
+							}
+						}
+					}
 				}
 				for _, u := range urls {
 					val, errV := h.imageOutputValue(context.Background(), token, u, "url")
