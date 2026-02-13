@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -102,6 +103,58 @@ func extractImageURLs(value interface{}) []string {
 // extractRenderableImageLinks is a broad fallback for Grok tool/card payloads.
 // Some Grok responses include image card/tool metadata where URLs aren't under the known keys.
 // We conservatively collect http(s) links that look like images and point to Grok-related hosts.
+type SearchImagesArgs struct {
+	ImageDescription string `json:"image_description"`
+	NumberOfImages   int    `json:"number_of_images"`
+}
+
+func parseSearchImagesArgsFromText(text string) []SearchImagesArgs {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	// Match tool cards like: xai:tool_name search_images ... xai:tool_args<![CDATA[{...}]]></xai:tool_args>
+	re := regexp.MustCompile(`(?is)xai:tool_name\s*search_images.*?xai:tool_args\s*<!\[CDATA\[(\{.*?\})\]\]>\s*</xai:tool_args>`)
+	matches := re.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]SearchImagesArgs, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		raw := strings.TrimSpace(m[1])
+		if raw == "" {
+			continue
+		}
+		var args SearchImagesArgs
+		if err := json.Unmarshal([]byte(raw), &args); err != nil {
+			continue
+		}
+		args.ImageDescription = strings.TrimSpace(args.ImageDescription)
+		if args.NumberOfImages <= 0 {
+			args.NumberOfImages = 4
+		}
+		if args.ImageDescription != "" {
+			out = append(out, args)
+		}
+	}
+	return out
+}
+
+func stripToolAndRenderMarkup(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	// Remove xai tool cards
+	text = regexp.MustCompile(`(?is)<xai:tool_usage_card.*?</xai:tool_usage_card>`).ReplaceAllString(text, "")
+	text = regexp.MustCompile(`(?is)xai:tool_usage_card.*?(?:</xai:tool_usage_card>|\z)`).ReplaceAllString(text, "")
+	// Remove grok render tags
+	text = regexp.MustCompile(`(?is)<grok:render.*?</grok:render>`).ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
 func extractRenderableImageLinks(value interface{}) []string {
 	seen := map[string]struct{}{}
 	var out []string

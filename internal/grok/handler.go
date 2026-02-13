@@ -500,6 +500,49 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 		content.WriteString(videoURL)
 	}
 
+	finalContent := content.String()
+	// If Grok returned search_images tool cards, run an equivalent image generation as a compatibility fallback.
+	// This makes OpenAI-compatible clients (e.g. Cherry Studio) able to display images.
+	args := parseSearchImagesArgsFromText(finalContent)
+	if len(args) > 0 {
+		cleaned := stripToolAndRenderMarkup(finalContent)
+		finalContent = cleaned
+
+		imSpec, ok := ResolveModel("grok-imagine-1.0")
+		if ok {
+			for _, a := range args {
+				n := a.NumberOfImages
+				if n > 4 {
+					n = 4 // keep it small; the original tool can request many
+				}
+				payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true)
+				resp2, err2 := h.client.doChat(context.Background(), token, payload)
+				if err2 != nil {
+					continue
+				}
+				var urls []string
+				_ = parseUpstreamLines(resp2.Body, func(line map[string]interface{}) error {
+					if mr, ok := line["modelResponse"].(map[string]interface{}); ok {
+						urls = append(urls, extractImageURLs(mr)...)
+					}
+					return nil
+				})
+				resp2.Body.Close()
+				urls = uniqueStrings(urls)
+				if len(urls) > n {
+					urls = urls[:n]
+				}
+				for _, u := range urls {
+					val, errV := h.imageOutputValue(context.Background(), token, u, "url")
+					if errV != nil || strings.TrimSpace(val) == "" {
+						val = u
+					}
+					finalContent += "\n![](" + val + ")"
+				}
+			}
+		}
+	}
+
 	resp := map[string]interface{}{
 		"id":      id,
 		"object":  "chat.completion",
@@ -510,7 +553,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 				"index": 0,
 				"message": map[string]interface{}{
 					"role":    "assistant",
-					"content": content.String(),
+					"content": finalContent,
 				},
 				"finish_reason": "stop",
 			},
