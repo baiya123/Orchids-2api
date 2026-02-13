@@ -228,10 +228,10 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	h.syncGrokQuota(acc, resp.Header)
 
 	if req.Stream {
-		h.streamChat(w, req.Model, spec, token, resp.Body)
+		h.streamChat(w, req.Model, spec, token, text, resp.Body)
 		return
 	}
-	h.collectChat(w, req.Model, spec, token, resp.Body)
+	h.collectChat(w, req.Model, spec, token, text, resp.Body)
 }
 
 func (h *Handler) buildChatPayload(ctx context.Context, token string, spec ModelSpec, text string, fileAttachments []string, videoCfg *VideoConfig) (map[string]interface{}, error) {
@@ -347,7 +347,7 @@ func (h *Handler) uploadSingleInput(ctx context.Context, token, input string) (s
 	return h.client.uploadFile(ctx, token, filename, mime, contentBase64)
 }
 
-func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec, token string, body io.Reader) {
+func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec, token string, userPrompt string, body io.Reader) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -448,7 +448,14 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	}
 
 	// If Grok emitted search_images tool cards, generate equivalent images and append as Markdown.
-	args := parseSearchImagesArgsFromText(rawAll.String())
+	rawText := rawAll.String()
+	args := parseSearchImagesArgsFromText(rawText)
+	if len(args) == 0 && strings.Contains(rawText, "search_images") {
+		desc := strings.TrimSpace(userPrompt)
+		if desc != "" {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
+		}
+	}
 	if len(args) > 0 {
 		imSpec, ok := ResolveModel("grok-imagine-1.0")
 		if ok {
@@ -492,7 +499,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	}
 }
 
-func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpec, token string, body io.Reader) {
+func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpec, token string, userPrompt string, body io.Reader) {
 	id := "chatcmpl_" + randomHex(8)
 	var content strings.Builder
 	lastMessage := ""
@@ -550,6 +557,12 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 	// If Grok returned search_images tool cards, run an equivalent image generation as a compatibility fallback.
 	// This makes OpenAI-compatible clients (e.g. Cherry Studio) able to display images.
 	args := parseSearchImagesArgsFromText(finalContent)
+	if len(args) == 0 && strings.Contains(finalContent, "search_images") {
+		desc := strings.TrimSpace(userPrompt)
+		if desc != "" {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
+		}
+	}
 	if len(args) > 0 {
 		cleaned := stripToolAndRenderMarkup(finalContent)
 		finalContent = cleaned
