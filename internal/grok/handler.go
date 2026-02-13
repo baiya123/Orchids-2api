@@ -367,6 +367,100 @@ func (h *Handler) uploadSingleInput(ctx context.Context, token, input string) (s
 	return h.client.uploadFile(ctx, token, filename, mime, contentBase64)
 }
 
+type streamMarkupFilter struct {
+	pending  string
+	inTool   bool
+	inRender bool
+}
+
+func (f *streamMarkupFilter) feed(chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	f.pending += chunk
+	var out strings.Builder
+
+	const toolStart = "xai:tool_usage_card"
+	const toolEnd = "</xai:tool_usage_card>"
+	const renderStart = "grok:render"
+	const renderEnd = "</grok:render>"
+
+	for {
+		lower := strings.ToLower(f.pending)
+		if f.inTool {
+			end := strings.Index(lower, toolEnd)
+			if end < 0 {
+				// Keep buffer bounded while waiting for end.
+				if len(f.pending) > 8192 {
+					f.pending = f.pending[len(f.pending)-8192:]
+				}
+				break
+			}
+			f.pending = f.pending[end+len(toolEnd):]
+			f.inTool = false
+			continue
+		}
+		if f.inRender {
+			end := strings.Index(lower, renderEnd)
+			if end < 0 {
+				if len(f.pending) > 8192 {
+					f.pending = f.pending[len(f.pending)-8192:]
+				}
+				break
+			}
+			f.pending = f.pending[end+len(renderEnd):]
+			f.inRender = false
+			continue
+		}
+
+		// Not inside markup: find earliest start marker.
+		idxTool := strings.Index(lower, toolStart)
+		idxRender := strings.Index(lower, renderStart)
+		idx := -1
+		kind := ""
+		if idxTool >= 0 {
+			idx = idxTool
+			kind = "tool"
+		}
+		if idxRender >= 0 && (idx < 0 || idxRender < idx) {
+			idx = idxRender
+			kind = "render"
+		}
+
+		if idx < 0 {
+			// No marker found; emit everything except a small tail to catch split markers.
+			keep := 32
+			if len(f.pending) <= keep {
+				break
+			}
+			safe := f.pending[:len(f.pending)-keep]
+			cleaned := stripToolAndRenderMarkup(safe)
+			if cleaned != "" {
+				out.WriteString(cleaned)
+			}
+			f.pending = f.pending[len(f.pending)-keep:]
+			break
+		}
+
+		// Emit prefix before the marker.
+		prefix := f.pending[:idx]
+		cleaned := stripToolAndRenderMarkup(prefix)
+		if cleaned != "" {
+			out.WriteString(cleaned)
+		}
+		f.pending = f.pending[idx:]
+		// Enter suppression state.
+		if kind == "tool" {
+			f.inTool = true
+		} else {
+			f.inRender = true
+		}
+		// Loop to consume until end marker appears.
+	}
+
+	return out.String()
+}
+
 func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec, token string, publicBase string, userPrompt string, body io.Reader) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -379,9 +473,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	sawToken := false
 	sentAny := false
 	var rawAll strings.Builder
-	inTool := false
-	inRender := false
-	tail := ""
+	mf := &streamMarkupFilter{}
 
 	emitChunk := func(delta map[string]interface{}, finish interface{}) {
 		chunk := map[string]interface{}{
@@ -413,43 +505,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		if tokenDelta, ok := resp["token"].(string); ok && tokenDelta != "" {
 			rawAll.WriteString(tokenDelta)
 			sawToken = true
-
-			// Streaming safety: tool/render markup often arrives split across chunks.
-			// Detect start markers and suppress until we see the closing tag.
-			// Streaming filter: markup can be split across chunks, so we keep state.
-			filter := func(chunk string) string {
-				if chunk == "" {
-					return ""
-				}
-				window := strings.ToLower(tail + chunk)
-				if strings.Contains(window, "xai:tool_usage_card") || strings.Contains(window, "xai:tool_") {
-					inTool = true
-				}
-				if strings.Contains(window, "grok:render") {
-					inRender = true
-				}
-				// Update tail (lowercased) for next chunk.
-				if len(window) > 120 {
-					tail = window[len(window)-120:]
-				} else {
-					tail = window
-				}
-				if inTool {
-					if strings.Contains(window, "</xai:tool_usage_card>") {
-						inTool = false
-					}
-					return ""
-				}
-				if inRender {
-					if strings.Contains(window, "</grok:render>") {
-						inRender = false
-					}
-					return ""
-				}
-				return stripToolAndRenderMarkup(chunk)
-			}
-
-			if cleaned := filter(tokenDelta); cleaned != "" {
+			if cleaned := mf.feed(tokenDelta); cleaned != "" {
 				emitChunk(map[string]interface{}{"content": cleaned}, nil)
 			}
 		}
@@ -458,26 +514,8 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				lastMessage = msg
 				rawAll.WriteString(msg)
 				if !sawToken {
-					// Apply the same streaming filter for message chunks too.
-					lower := strings.ToLower(msg)
-					// quick state transitions (in case msg delivers markup without token deltas)
-					if strings.Contains(lower, "xai:tool_usage_card") || strings.Contains(lower, "xai:tool_") {
-						inTool = true
-					}
-					if strings.Contains(lower, "grok:render") {
-						inRender = true
-					}
-					if !(inTool || inRender) {
-						cleaned := stripToolAndRenderMarkup(msg)
-						if cleaned != "" {
-							emitChunk(map[string]interface{}{"content": cleaned}, nil)
-						}
-					}
-					if inTool && strings.Contains(lower, "</xai:tool_usage_card>") {
-						inTool = false
-					}
-					if inRender && strings.Contains(lower, "</grok:render>") {
-						inRender = false
+					if cleaned := mf.feed(msg); cleaned != "" {
+						emitChunk(map[string]interface{}{"content": cleaned}, nil)
 					}
 				}
 				if strings.Contains(msg, "<grok:render") || strings.Contains(msg, "tool_usage_card") {
