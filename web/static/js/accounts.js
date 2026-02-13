@@ -312,7 +312,7 @@ function evaluateAccountStatus(acc) {
   if (acc.usage_limit > 0) {
     const used = acc.usage_current || 0;
     const limit = acc.usage_limit || 0;
-    if (type === 'orchids') {
+    if (type === 'orchids' || type === 'grok') {
       const remaining = Math.max(0, limit - used);
       if (remaining <= 0) {
         return { normal: false, text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (剩余 0 / ' + Math.floor(limit) + ')' };
@@ -336,18 +336,22 @@ function statusBadge(acc) {
 
 // Check single account
 async function checkAccount(id, silent = false) {
+  const acc = accounts.find((a) => a.id === id);
+  const type = acc ? normalizeAccountType(acc) : "orchids";
+  const action = type === "grok" ? "verify" : "refresh";
+  const actionText = action === "verify" ? "验证" : "刷新";
   try {
-    const res = await fetch(`/api/accounts/${id}/refresh`);
+    const res = await fetch(`/api/accounts/${id}/${action}`);
     if (!res.ok) {
       throw new Error(await res.text());
     }
     const updated = await res.json();
     accounts = accounts.map(a => (a.id === id ? updated : a));
     updateAccountHealth(id, true);
-    if (!silent) showToast(`账号 ${updated.name || updated.email || id} 正常`, "success");
+    if (!silent) showToast(`账号 ${updated.name || updated.email || id} ${actionText}完成`, "success");
   } catch (err) {
     updateAccountHealth(id, false, err.message || String(err));
-    if (!silent) showToast(`账号 ${id} 检测失败`, "error");
+    if (!silent) showToast(`账号 ${id} ${actionText}失败`, "error");
   } finally {
     renderAccounts();
     updateStats();
@@ -457,7 +461,6 @@ function renderAccounts() {
     { label: "ID", style: "width: 60px;" },
     { label: "Token" },
     { label: "模型" },
-    { label: "今日用量", style: "width: 100px;" },
     { label: "配额", style: "width: 140px;" },
     { label: "状态" },
     { label: "调用" },
@@ -485,6 +488,7 @@ function renderAccounts() {
   pageItems.forEach((acc) => {
     const badge = statusBadge(acc);
     const tokenDisplay = formatTokenDisplay(acc);
+    const type = normalizeAccountType(acc);
     const tr = document.createElement("tr");
 
     const tdCheck = document.createElement("td");
@@ -520,20 +524,12 @@ function renderAccounts() {
     tdModel.appendChild(modelSpan);
     tr.appendChild(tdModel);
 
-    const tdUsage = document.createElement("td");
-    const usageCurrent = acc.usage_daily || 0;
-    tdUsage.style.fontSize = "0.9rem";
-    tdUsage.style.color = "#94a3b8";
-    tdUsage.textContent = usageCurrent.toFixed(2);
-    tr.appendChild(tdUsage);
-
     const tdQuota = document.createElement("td");
     tdQuota.style.fontSize = "0.85rem";
     if (acc.usage_limit > 0) {
-      const type = normalizeAccountType(acc);
       const used = Math.floor(acc.usage_current || 0);
       const limit = Math.floor(acc.usage_limit);
-      if (type === 'orchids') {
+      if (type === 'orchids' || type === 'grok') {
         const remaining = Math.max(0, limit - used);
         const pct = limit > 0 ? Math.min(100, Math.round(((limit - remaining) / limit) * 100)) : 0;
         const color = pct >= 90 ? "#fb7185" : pct >= 70 ? "#f59e0b" : "#34d399";
@@ -591,7 +587,7 @@ function renderAccounts() {
     refresh.className = "action-icon";
     refresh.dataset.action = "refresh";
     refresh.dataset.id = encodeData(acc.id);
-    refresh.title = "刷新";
+    refresh.title = type === "grok" ? "验证" : "刷新";
     refresh.textContent = "🔄";
 
     const del = document.createElement("i");
@@ -731,8 +727,6 @@ function updateStats() {
   // Attempt to update selected if element exists (it should)
   updateSelectedCount();
 
-  const totalUsage = accounts.reduce((sum, acc) => sum + (acc.usage_daily || 0), 0);
-
   // Update sidebar footer
   const footerTotal = document.getElementById("footerTotal");
   if (footerTotal) footerTotal.textContent = total;
@@ -742,11 +736,6 @@ function updateStats() {
 
   const footerAbnormal = document.getElementById("footerAbnormal");
   if (footerAbnormal) footerAbnormal.textContent = abnormal;
-
-  const footerUsage = document.getElementById("footerUsageText");
-  if (footerUsage) {
-    footerUsage.textContent = `${Math.floor(totalUsage)}`;
-  }
 }
 
 // Update selected count
@@ -866,16 +855,11 @@ function editAccount(id) {
 
 // Refresh token
 async function refreshToken(id) {
-  try {
-    showToast("正在查询账号信息...", "info");
-    const res = await fetch(`/api/accounts/${id}/refresh`);
-    if (!res.ok) throw new Error(await res.text());
-    const acc = await res.json();
-    showToast(`账号 ${acc.email || id} 刷新完成`);
-    loadAccounts();
-  } catch (err) {
-    showToast("刷新失败: " + err.message, "error");
-  }
+  const acc = accounts.find((a) => a.id === id);
+  const type = acc ? normalizeAccountType(acc) : "orchids";
+  const actionText = type === "grok" ? "验证" : "刷新";
+  showToast(`正在${actionText}账号信息...`, "info");
+  await checkAccount(id, false);
 }
 
 // Delete account

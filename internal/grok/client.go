@@ -21,6 +21,7 @@ const (
 	defaultUploadFilePath = "/rest/app-chat/upload-file"
 	defaultCreatePostPath = "/rest/media/post/create"
 	defaultLivekitPath    = "/rest/livekit/tokens"
+	defaultRateLimitsPath = "/rest/rate-limits"
 	defaultUA             = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 
@@ -59,7 +60,8 @@ func (c *Client) userAgent() string {
 func (c *Client) headers(token string) http.Header {
 	h := http.Header{}
 	h.Set("Accept", "*/*")
-	h.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	// Let net/http manage Accept-Encoding so gzip is transparently decoded.
+	// Manually setting it disables automatic decompression and can break JSON parsing.
 	h.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Content-Type", "application/json")
@@ -142,6 +144,89 @@ func (c *Client) doChat(ctx context.Context, token string, payload map[string]in
 		return nil, fmt.Errorf("grok upstream status=%d body=%s", resp.StatusCode, string(raw))
 	}
 	return resp, nil
+}
+
+func (c *Client) VerifyToken(ctx context.Context, token, modelID string) (*RateLimitInfo, error) {
+	info, err := c.GetUsage(ctx, token, modelID)
+	if err == nil {
+		return info, nil
+	}
+
+	model := strings.TrimSpace(modelID)
+	if model == "" {
+		model = "grok-3"
+	}
+	spec, ok := ResolveModel(model)
+	if !ok {
+		spec, ok = ResolveModel("grok-3")
+		if !ok {
+			return nil, fmt.Errorf("grok default model not available")
+		}
+	}
+	payload := c.chatPayload(spec, "ping", true)
+	resp, chatErr := c.doChat(ctx, token, payload)
+	if chatErr != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return parseRateLimitInfo(resp.Header), nil
+}
+
+func (c *Client) GetUsage(ctx context.Context, token, modelID string) (*RateLimitInfo, error) {
+	model := strings.TrimSpace(modelID)
+	if model == "" {
+		model = "grok-3"
+	}
+	spec, ok := ResolveModel(model)
+	if !ok {
+		spec, ok = ResolveModel("grok-3")
+		if !ok {
+			return nil, fmt.Errorf("grok default model not available")
+		}
+	}
+
+	payload := map[string]interface{}{
+		"requestKind": "DEFAULT",
+		"modelName":   strings.TrimSpace(spec.UpstreamModel),
+	}
+	if strings.TrimSpace(spec.UpstreamModel) == "" {
+		payload["modelName"] = "grok-4-1-thinking-1129"
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	reqURL := c.baseURL() + defaultRateLimitsPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = c.headers(token)
+
+	c.configureProxyTransport()
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("grok usage status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	var payloadResp map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&payloadResp); err != nil {
+		return nil, err
+	}
+	if info := parseRateLimitPayload(payloadResp); info != nil {
+		return info, nil
+	}
+	return parseRateLimitInfo(resp.Header), nil
 }
 
 func (c *Client) configureProxyTransport() {

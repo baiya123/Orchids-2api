@@ -319,6 +319,11 @@ func main() {
 					}
 					continue
 				}
+				// Grok accounts store SSO tokens in ClientCookie and are not Clerk-backed.
+				// Skip auto-refresh to avoid false 401s and cooldown.
+				if strings.EqualFold(acc.AccountType, "grok") {
+					continue
+				}
 				if strings.TrimSpace(acc.ClientCookie) == "" {
 					continue
 				}

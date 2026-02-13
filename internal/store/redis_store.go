@@ -147,9 +147,7 @@ func (s *redisStore) UpdateAccount(ctx context.Context, acc *Account) error {
 	updated.Subscription = acc.Subscription
 	updated.UsageCurrent = acc.UsageCurrent
 	updated.UsageTotal = acc.UsageTotal
-	updated.UsageDaily = acc.UsageDaily
 	updated.UsageLimit = acc.UsageLimit
-	updated.ResetDate = acc.ResetDate
 	updated.StatusCode = acc.StatusCode
 	updated.LastAttempt = acc.LastAttempt
 	updated.QuotaResetAt = acc.QuotaResetAt
@@ -308,13 +306,6 @@ func (s *redisStore) IncrementAccountStats(ctx context.Context, id int64, usage 
 		
 		local acc = cjson.decode(val)
 		
-		-- Daily Reset Logic
-		local today = string.sub(now_str, 1, 10)
-		if acc.reset_date ~= today then
-			acc.usage_daily = 0
-			acc.reset_date = today
-		end
-
 		local acc_type = ""
 		if acc.account_type ~= nil then
 			acc_type = string.lower(tostring(acc.account_type))
@@ -327,7 +318,6 @@ func (s *redisStore) IncrementAccountStats(ctx context.Context, id int64, usage 
 			acc.usage_current = (acc.usage_current or 0) + usage
 		end
 		acc.usage_total = (acc.usage_total or 0) + usage
-		acc.usage_daily = (acc.usage_daily or 0) + usage
 		acc.request_count = (acc.request_count or 0) + count
 		acc.last_used_at = now_str
 		acc.updated_at = now_str

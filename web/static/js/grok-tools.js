@@ -87,7 +87,7 @@
     if (latency) latency.textContent = "-";
   }
 
-  function appendImagineImage(b64, seq, elapsedMS) {
+  function appendImagineImage(b64, seq, elapsedMS, fileURL) {
     const grid = document.getElementById("imagineGrid");
     const empty = document.getElementById("imagineEmpty");
     if (!grid) return;
@@ -97,12 +97,19 @@
     card.className = "imagine-card";
 
     const img = document.createElement("img");
-    const mime = detectImageMime(b64);
-    const src = `data:${mime};base64,${b64}`;
+    let src = "";
+    if (fileURL) {
+      src = fileURL;
+    } else if (b64) {
+      const mime = detectImageMime(b64);
+      src = `data:${mime};base64,${b64}`;
+    }
+    if (!src) return;
     img.src = src;
     img.alt = `imagine-${seq || 0}`;
     img.loading = "lazy";
-    img.addEventListener("click", () => window.open(src, "_blank", "noopener"));
+    const openURL = fileURL || src;
+    img.addEventListener("click", () => window.open(openURL, "_blank", "noopener"));
 
     const meta = document.createElement("div");
     meta.className = "imagine-meta";
@@ -122,7 +129,8 @@
     if (!payload || typeof payload !== "object") return;
     if (payload.type === "image") {
       const b64 = String(payload.b64_json || "");
-      if (!b64) return;
+      const fileURL = String(payload.file_url || payload.url || "");
+      if (!b64 && !fileURL) return;
       imagineState.imageCount += 1;
       const count = document.getElementById("imagineCount");
       if (count) count.textContent = String(imagineState.imageCount);
@@ -135,7 +143,7 @@
         const latency = document.getElementById("imagineLatency");
         if (latency) latency.textContent = `${avg} ms`;
       }
-      appendImagineImage(b64, payload.sequence, payload.elapsed_ms);
+      appendImagineImage(b64, payload.sequence, payload.elapsed_ms, fileURL);
       return;
     }
 

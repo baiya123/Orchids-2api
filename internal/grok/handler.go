@@ -19,6 +19,7 @@ import (
 
 	"orchids-api/internal/config"
 	"orchids-api/internal/loadbalancer"
+	"orchids-api/internal/store"
 )
 
 const maxEditImageBytes = 50 * 1024 * 1024
@@ -39,13 +40,13 @@ func NewHandler(cfg *config.Config, lb *loadbalancer.LoadBalancer) *Handler {
 	}
 }
 
-func (h *Handler) selectToken(ctx context.Context) (string, error) {
+func (h *Handler) selectAccount(ctx context.Context) (*store.Account, string, error) {
 	if h.lb == nil {
-		return "", fmt.Errorf("load balancer not configured")
+		return nil, "", fmt.Errorf("load balancer not configured")
 	}
 	acc, err := h.lb.GetNextAccountExcludingByChannel(ctx, nil, "grok")
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	raw := strings.TrimSpace(acc.ClientCookie)
 	if raw == "" {
@@ -53,9 +54,34 @@ func (h *Handler) selectToken(ctx context.Context) (string, error) {
 	}
 	token := parseTokenValue(raw)
 	if token == "" {
-		return "", fmt.Errorf("grok account token is empty")
+		return nil, "", fmt.Errorf("grok account token is empty")
 	}
-	return token, nil
+	return acc, token, nil
+}
+
+func (h *Handler) syncGrokQuota(acc *store.Account, headers http.Header) {
+	if acc == nil || h.lb == nil || h.lb.Store == nil {
+		return
+	}
+	info := parseRateLimitInfo(headers)
+	if info == nil || info.Limit <= 0 {
+		return
+	}
+	used := info.Limit - info.Remaining
+	if used < 0 {
+		used = 0
+	}
+	acc.UsageLimit = float64(info.Limit)
+	acc.UsageCurrent = float64(used)
+	if !info.ResetAt.IsZero() {
+		acc.QuotaResetAt = info.ResetAt
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.lb.Store.UpdateAccount(ctx, acc); err != nil {
+		slog.Warn("grok quota update failed", "account_id", acc.ID, "error", err)
+	}
 }
 
 func (h *Handler) HandleModels(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +133,7 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	token, err := h.selectToken(r.Context())
+	acc, token, err := h.selectAccount(r.Context())
 	if err != nil {
 		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -140,6 +166,7 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer resp.Body.Close()
+	h.syncGrokQuota(acc, resp.Header)
 
 	if req.Stream {
 		h.streamChat(w, req.Model, spec, token, resp.Body)
@@ -271,6 +298,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	sentRole := false
 	lastMessage := ""
 	sawToken := false
+	sentAny := false
 
 	emitChunk := func(delta map[string]interface{}, finish interface{}) {
 		chunk := map[string]interface{}{
@@ -291,9 +319,10 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		if flusher != nil {
 			flusher.Flush()
 		}
+		sentAny = true
 	}
 
-	_ = parseUpstreamLines(body, func(resp map[string]interface{}) error {
+	err := parseUpstreamLines(body, func(resp map[string]interface{}) error {
 		if !sentRole {
 			emitChunk(map[string]interface{}{"role": "assistant"}, nil)
 			sentRole = true
@@ -329,6 +358,14 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		}
 		return nil
 	})
+	if err != nil {
+		slog.Warn("grok stream parse failed", "error", err)
+		if !sentAny {
+			http.Error(w, "stream parse error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		emitChunk(map[string]interface{}{"content": "\n[上游响应解析失败]\n"}, nil)
+	}
 
 	emitChunk(map[string]interface{}{}, "stop")
 	writeSSE(w, "", "[DONE]")
@@ -476,6 +513,28 @@ func (h *Handler) cacheMediaURL(ctx context.Context, token, rawURL, mediaType st
 	if err != nil {
 		return "", err
 	}
+	return h.cacheMediaBytes(rawURL, mediaType, data, mimeType)
+}
+
+func (h *Handler) imageOutputValue(ctx context.Context, token, url, format string) (string, error) {
+	if normalizeImageResponseFormat(format) == "url" {
+		if name, err := h.cacheMediaURL(ctx, token, url, "image"); err == nil && name != "" {
+			return "/grok/v1/files/image/" + name, nil
+		}
+		return strings.TrimSpace(url), nil
+	}
+	raw, _, err := h.client.downloadAsset(ctx, token, url)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func (h *Handler) cacheMediaBytes(rawURL, mediaType string, data []byte, mimeType string) (string, error) {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType != "video" {
+		mediaType = "image"
+	}
 	if len(data) == 0 {
 		return "", fmt.Errorf("empty media data")
 	}
@@ -503,20 +562,6 @@ func (h *Handler) cacheMediaURL(ctx context.Context, token, rawURL, mediaType st
 		return "", renameErr
 	}
 	return name, nil
-}
-
-func (h *Handler) imageOutputValue(ctx context.Context, token, url, format string) (string, error) {
-	if normalizeImageResponseFormat(format) == "url" {
-		if name, err := h.cacheMediaURL(ctx, token, url, "image"); err == nil && name != "" {
-			return "/grok/v1/files/image/" + name, nil
-		}
-		return strings.TrimSpace(url), nil
-	}
-	raw, _, err := h.client.downloadAsset(ctx, token, url)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
 func (h *Handler) streamImageGeneration(w http.ResponseWriter, body io.Reader, token, format string, n int) {
@@ -616,7 +661,7 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	token, err := h.selectToken(r.Context())
+	_, token, err := h.selectAccount(r.Context())
 	if err != nil {
 		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -786,7 +831,7 @@ func (h *Handler) HandleImagesEdits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.selectToken(r.Context())
+	_, token, err := h.selectAccount(r.Context())
 	if err != nil {
 		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -1009,7 +1054,7 @@ func (h *Handler) HandleAdminVoiceToken(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	token, err := h.selectToken(r.Context())
+	_, token, err := h.selectAccount(r.Context())
 	if err != nil {
 		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
 		return

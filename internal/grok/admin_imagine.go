@@ -2,6 +2,7 @@ package grok
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -42,6 +43,11 @@ type imagineStartRequest struct {
 
 type imagineStopRequest struct {
 	TaskIDs []string `json:"task_ids"`
+}
+
+type imagineImage struct {
+	B64 string
+	URL string
 }
 
 func cleanupImagineSessionsLocked(now time.Time) {
@@ -146,7 +152,7 @@ func ensureImageAspectRatio(payload map[string]interface{}, ratio string) {
 	}
 }
 
-func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio string, n int) ([]string, int, error) {
+func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio string, n int) ([]imagineImage, int, error) {
 	spec, ok := ResolveModel("grok-imagine-1.0")
 	if !ok || !spec.IsImage {
 		return nil, 0, fmt.Errorf("image model not supported")
@@ -155,7 +161,7 @@ func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio 
 		n = 1
 	}
 
-	token, err := h.selectToken(ctx)
+	_, token, err := h.selectAccount(ctx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("no available grok token: %w", err)
 	}
@@ -195,15 +201,23 @@ func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio 
 		urls = urls[:n]
 	}
 
-	images := make([]string, 0, len(urls))
+	images := make([]imagineImage, 0, len(urls))
 	for _, u := range urls {
-		b64, err := h.imageOutputValue(ctx, token, u, "b64_json")
+		data, mimeType, err := h.client.downloadAsset(ctx, token, u)
 		if err != nil {
-			slog.Warn("imagine image convert failed", "url", u, "error", err)
+			slog.Warn("imagine image download failed", "url", u, "error", err)
 			continue
 		}
-		if strings.TrimSpace(b64) != "" {
-			images = append(images, b64)
+		if len(data) == 0 {
+			continue
+		}
+		b64 := base64.StdEncoding.EncodeToString(data)
+		fileURL := ""
+		if name, err := h.cacheMediaBytes(u, "image", data, mimeType); err == nil && name != "" {
+			fileURL = "/grok/v1/files/image/" + name
+		}
+		if strings.TrimSpace(b64) != "" || fileURL != "" {
+			images = append(images, imagineImage{B64: b64, URL: fileURL})
 		}
 	}
 	if len(images) == 0 {
@@ -291,7 +305,8 @@ func (h *Handler) runImagineLoop(
 			sequence++
 			if !emit(map[string]interface{}{
 				"type":         "image",
-				"b64_json":     img,
+				"b64_json":     img.B64,
+				"file_url":     img.URL,
 				"sequence":     sequence,
 				"created_at":   nowMillis,
 				"elapsed_ms":   elapsedMS,

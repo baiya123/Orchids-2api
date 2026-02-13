@@ -249,6 +249,226 @@ func parseTokenValue(raw string) string {
 	return strings.TrimSpace(token)
 }
 
+func parseRateLimitInfo(headers http.Header) *RateLimitInfo {
+	if headers == nil {
+		return nil
+	}
+	limitRaw := firstHeaderValue(
+		headers,
+		"ratelimit-limit",
+		"x-ratelimit-limit",
+		"x-rate-limit-limit",
+		"x-usage-limit",
+		"x-ratelimit-limit-requests",
+		"x-ratelimit-limit-reqs",
+	)
+	remainingRaw := firstHeaderValue(
+		headers,
+		"ratelimit-remaining",
+		"x-ratelimit-remaining",
+		"x-rate-limit-remaining",
+		"x-usage-remaining",
+		"x-ratelimit-remaining-requests",
+		"x-ratelimit-remaining-reqs",
+	)
+	resetRaw := firstHeaderValue(
+		headers,
+		"ratelimit-reset",
+		"x-ratelimit-reset",
+		"x-rate-limit-reset",
+		"x-ratelimit-reset-requests",
+	)
+
+	limit, okLimit := parseRateLimitValue(limitRaw)
+	remaining, okRemaining := parseRateLimitValue(remainingRaw)
+	resetAt := parseRateLimitReset(resetRaw)
+
+	if !okLimit && !okRemaining && resetRaw == "" {
+		return nil
+	}
+
+	info := &RateLimitInfo{
+		Limit:     limit,
+		Remaining: remaining,
+		ResetAt:   resetAt,
+	}
+	return info
+}
+
+func parseRateLimitPayload(payload map[string]interface{}) *RateLimitInfo {
+	if payload == nil {
+		return nil
+	}
+
+	limitKeys := map[string]struct{}{
+		"limit":            {},
+		"limit_tokens":     {},
+		"limittokens":      {},
+		"max_tokens":       {},
+		"maxtokens":        {},
+		"token_limit":      {},
+		"tokenlimit":       {},
+		"tokens_limit":     {},
+		"tokenslimit":      {},
+		"total_tokens":     {},
+		"totaltokens":      {},
+		"quota":            {},
+		"quota_limit":      {},
+		"quotalimit":       {},
+		"request_limit":    {},
+		"requestlimit":     {},
+		"requests_limit":   {},
+		"requestslimit":    {},
+		"request_limiters": {},
+	}
+	remainingKeys := map[string]struct{}{
+		"remaining":          {},
+		"remaining_tokens":   {},
+		"remainingtokens":    {},
+		"tokens_remaining":   {},
+		"tokensremaining":    {},
+		"quota_remaining":    {},
+		"quotaremaining":     {},
+		"remaining_requests": {},
+		"remainingrequests":  {},
+	}
+	resetKeys := map[string]struct{}{
+		"reset":           {},
+		"reset_at":        {},
+		"resetat":         {},
+		"reset_at_ms":     {},
+		"resetatms":       {},
+		"reset_time":      {},
+		"resettime":       {},
+		"reset_timestamp": {},
+		"resettimestamp":  {},
+		"next_reset":      {},
+		"nextreset":       {},
+	}
+
+	limit, okLimit := findNumberByKeys(payload, limitKeys)
+	remaining, okRemaining := findNumberByKeys(payload, remainingKeys)
+	resetRaw, okReset := findValueByKeys(payload, resetKeys)
+
+	if !okLimit && !okRemaining && !okReset {
+		return nil
+	}
+
+	info := &RateLimitInfo{
+		Limit:     limit,
+		Remaining: remaining,
+	}
+	if okReset {
+		info.ResetAt = parseRateLimitReset(fmt.Sprint(resetRaw))
+	}
+	return info
+}
+
+func findNumberByKeys(value interface{}, keys map[string]struct{}) (int64, bool) {
+	raw, ok := findValueByKeys(value, keys)
+	if !ok {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, true
+		}
+		if f, err := v.Float64(); err == nil {
+			return int64(f), true
+		}
+		return 0, false
+	case string:
+		return parseRateLimitValue(v)
+	default:
+		return parseRateLimitValue(fmt.Sprint(v))
+	}
+}
+
+func findValueByKeys(value interface{}, keys map[string]struct{}) (interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, item := range v {
+			if _, ok := keys[normalizeRateKey(k)]; ok {
+				return item, true
+			}
+		}
+		for _, item := range v {
+			if out, ok := findValueByKeys(item, keys); ok {
+				return out, true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if out, ok := findValueByKeys(item, keys); ok {
+				return out, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func normalizeRateKey(key string) string {
+	key = strings.TrimSpace(strings.ToLower(key))
+	key = strings.ReplaceAll(key, "-", "_")
+	key = strings.ReplaceAll(key, " ", "")
+	return key
+}
+
+func firstHeaderValue(headers http.Header, keys ...string) string {
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if val := strings.TrimSpace(headers.Get(key)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func parseRateLimitValue(raw string) (int64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return v, true
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return int64(f), true
+	}
+	return 0, false
+}
+
+func parseRateLimitReset(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if v, ok := parseRateLimitValue(raw); ok {
+		// Treat large values as milliseconds.
+		if v > 1_000_000_000_000 {
+			return time.UnixMilli(v)
+		}
+		if v > 0 {
+			return time.Unix(v, 0)
+		}
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
 func encodeJSON(v interface{}) string {
 	buf := bytes.Buffer{}
 	enc := json.NewEncoder(&buf)

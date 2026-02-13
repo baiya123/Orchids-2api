@@ -67,25 +67,3 @@ function switchTab(tabName, skipSidebar = false) {
   url.searchParams.set('tab', tabName);
   window.location.href = url.toString();
 }
-// Update Sidebar Usage Stats
-async function updateSidebarUsage() {
-  const footerUsage = document.getElementById("footerUsageText");
-
-  if (!footerUsage) return;
-
-  try {
-    const res = await fetch("/api/accounts");
-    if (!res.ok) return; // Silent fail if unauthorized or error
-    const accounts = await res.json();
-
-    const totalUsage = accounts.reduce((sum, acc) => sum + (acc.usage_daily || 0), 0);
-    footerUsage.textContent = `${Math.floor(totalUsage)}`;
-  } catch (e) {
-    console.error("Failed to update sidebar usage", e);
-  }
-}
-
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
-  updateSidebarUsage();
-});

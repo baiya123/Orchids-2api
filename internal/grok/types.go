@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type ChatCompletionsRequest struct {
@@ -33,6 +34,12 @@ type ImagesGenerationsRequest struct {
 	N              int    `json:"n"`
 	Stream         bool   `json:"stream"`
 	ResponseFormat string `json:"response_format"`
+}
+
+type RateLimitInfo struct {
+	Limit     int64
+	Remaining int64
+	ResetAt   time.Time
 }
 
 func (r *ChatCompletionsRequest) Validate() error {

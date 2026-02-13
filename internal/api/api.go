@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"orchids-api/internal/auth"
 	"orchids-api/internal/clerk"
 	"orchids-api/internal/config"
+	"orchids-api/internal/grok"
 	"orchids-api/internal/orchids"
 	"orchids-api/internal/store"
 	"orchids-api/internal/tokencache"
@@ -79,6 +81,72 @@ func parseGrokSSOToken(raw string) string {
 		}
 	}
 	return strings.TrimSpace(token)
+}
+
+func classifyAccountStatusFromError(errStr string) string {
+	lower := strings.ToLower(errStr)
+	switch {
+	case hasExplicitHTTPStatus(lower, "401") || strings.Contains(lower, "signed out") || strings.Contains(lower, "signed_out") || strings.Contains(lower, "unauthorized"):
+		return "401"
+	case hasExplicitHTTPStatus(lower, "403") || strings.Contains(lower, "forbidden"):
+		return "403"
+	case hasExplicitHTTPStatus(lower, "404"):
+		return "404"
+	case hasExplicitHTTPStatus(lower, "429") ||
+		strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "no remaining quota") ||
+		strings.Contains(lower, "out of credits") ||
+		strings.Contains(lower, "credits exhausted") ||
+		strings.Contains(lower, "run out of credits"):
+		return "429"
+	default:
+		return ""
+	}
+}
+
+func hasExplicitHTTPStatus(lower string, code string) bool {
+	code = strings.TrimSpace(code)
+	if code == "" || lower == "" {
+		return false
+	}
+	patterns := []string{
+		"http " + code,
+		"http/1.1 " + code,
+		"http/2 " + code,
+		"status " + code,
+		"status=" + code,
+		"status:" + code,
+		"statuscode " + code,
+		"statuscode=" + code,
+		"status code " + code,
+		"code " + code,
+		"code=" + code,
+		"code:" + code,
+		"response status " + code,
+		"response code " + code,
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func httpStatusFromAccountStatus(status string) int {
+	switch strings.TrimSpace(status) {
+	case "401":
+		return http.StatusUnauthorized
+	case "403":
+		return http.StatusForbidden
+	case "404":
+		return http.StatusNotFound
+	case "429":
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 func normalizeGrokTokenInput(acc *store.Account) {
@@ -362,10 +430,79 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isRefresh := len(parts) > 1 && parts[1] == "refresh"
+	isVerify := len(parts) > 1 && parts[1] == "verify"
 	isUsage := len(parts) > 1 && parts[1] == "usage"
 
 	switch r.Method {
 	case http.MethodGet:
+		if isVerify {
+			acc, err := a.store.GetAccount(r.Context(), id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			if !strings.EqualFold(acc.AccountType, "grok") {
+				http.Error(w, "Verify is only supported for grok accounts", http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(acc.ClientCookie) == "" {
+				http.Error(w, "Failed to verify grok account: missing sso token", http.StatusBadRequest)
+				return
+			}
+
+			var cfg *config.Config
+			a.configMu.RLock()
+			if raw, ok := a.config.(*config.Config); ok {
+				cfg = raw
+			}
+			a.configMu.RUnlock()
+			client := grok.New(cfg)
+
+			verifyCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			info, verifyErr := client.VerifyToken(verifyCtx, acc.ClientCookie, acc.AgentMode)
+			cancel()
+			if verifyErr != nil {
+				status := classifyAccountStatusFromError(verifyErr.Error())
+				if status != "" {
+					acc.StatusCode = status
+					acc.LastAttempt = time.Now()
+					if updateErr := a.store.UpdateAccount(r.Context(), acc); updateErr != nil {
+						slog.Warn("Failed to persist grok verify status", "account_id", acc.ID, "error", updateErr)
+					}
+				}
+				http.Error(w, "Failed to verify grok account: "+verifyErr.Error(), httpStatusFromAccountStatus(status))
+				return
+			}
+
+			acc.StatusCode = ""
+			acc.LastAttempt = time.Time{}
+			acc.QuotaResetAt = time.Time{}
+
+			if info != nil {
+				if info.Limit > 0 {
+					used := info.Limit - info.Remaining
+					if used < 0 {
+						used = 0
+					}
+					acc.UsageLimit = float64(info.Limit)
+					acc.UsageCurrent = float64(used)
+				} else if info.Remaining > 0 {
+					// Only remaining is known; expose it as limit with 0 used.
+					acc.UsageLimit = float64(info.Remaining)
+					acc.UsageCurrent = 0
+				}
+				if !info.ResetAt.IsZero() {
+					acc.QuotaResetAt = info.ResetAt
+				}
+			}
+
+			if err := a.store.UpdateAccount(r.Context(), acc); err != nil {
+				http.Error(w, "Failed to save verified account: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(normalizeAccountOutput(acc))
+			return
+		}
 		if isUsage {
 			acc, err := a.store.GetAccount(r.Context(), id)
 			if err != nil {
@@ -379,10 +516,8 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 				"subscription":   acc.Subscription,
 				"usage_current":  acc.UsageCurrent,
 				"usage_limit":    acc.UsageLimit,
-				"usage_daily":    acc.UsageDaily,
 				"usage_total":    acc.UsageTotal,
 				"quota_reset_at": acc.QuotaResetAt,
-				"reset_date":     acc.ResetDate,
 			})
 			return
 		}
