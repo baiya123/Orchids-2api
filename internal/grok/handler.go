@@ -29,6 +29,9 @@ func sanitizeText(s string) string {
 	}
 	// Drop replacement chars introduced by invalid UTF-8 boundaries.
 	s = strings.ReplaceAll(s, "\uFFFD", "")
+	// Some clients show stray "<<<" fragments when markup is partially suppressed.
+	// Keep it conservative: only trim leading '<' characters.
+	s = strings.TrimLeft(s, "<")
 	return s
 }
 
@@ -682,6 +685,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				if len(urls) == 0 {
 					emitChunk(map[string]interface{}{"content": "\n[图片生成未返回可用链接]\n"}, nil)
 				}
+				wroteSep := false
 				for _, u := range urls {
 					val, errV := h.imageOutputValue(context.Background(), token, u, "url")
 					if errV != nil || strings.TrimSpace(val) == "" {
@@ -690,7 +694,11 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 					if publicBase != "" && strings.HasPrefix(val, "/") {
 						val = publicBase + val
 					}
-					emitChunk(map[string]interface{}{"content": "\n![](" + val + ")"}, nil)
+					if !wroteSep {
+						emitChunk(map[string]interface{}{"content": "\n\n"}, nil)
+						wroteSep = true
+					}
+					emitChunk(map[string]interface{}{"content": "![](" + val + ")\n"}, nil)
 				}
 			}
 		}
@@ -837,6 +845,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 						}
 					}
 				}
+				wroteSep := false
 				for _, u := range urls {
 					val, errV := h.imageOutputValue(context.Background(), token, u, "url")
 					if errV != nil || strings.TrimSpace(val) == "" {
@@ -845,7 +854,13 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 					if publicBase != "" && strings.HasPrefix(val, "/") {
 						val = publicBase + val
 					}
-					finalContent += "\n![](" + val + ")"
+					if !wroteSep {
+						finalContent += "\n\n"
+						wroteSep = true
+					}
+					finalContent += "![]("
+					finalContent += val
+					finalContent += ")\n"
 				}
 			}
 		}
