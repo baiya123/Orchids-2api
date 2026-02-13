@@ -15,10 +15,10 @@ func TestParseFilesPath(t *testing.T) {
 		wantFile  string
 		wantMatch bool
 	}{
-		{path: "/grok/files/image/a.jpg", wantType: "image", wantFile: "a.jpg", wantMatch: true},
-		{path: "/grok/files/video/sub/path.mp4", wantType: "video", wantFile: "sub-path.mp4", wantMatch: true},
-		{path: "/grok/files/other/a.bin", wantMatch: false},
-		{path: "/grok/files/image/../a.jpg", wantMatch: false},
+		{path: "/grok/v1/files/image/a.jpg", wantType: "image", wantFile: "a.jpg", wantMatch: true},
+		{path: "/grok/v1/files/video/sub/path.mp4", wantType: "video", wantFile: "sub-path.mp4", wantMatch: true},
+		{path: "/grok/v1/files/other/a.bin", wantMatch: false},
+		{path: "/grok/v1/files/image/../a.jpg", wantMatch: false},
 		{path: "/v1/files/image/a.jpg", wantMatch: false},
 	}
 	for _, tt := range tests {
@@ -51,7 +51,7 @@ func TestHandleFiles(t *testing.T) {
 
 	h := &Handler{}
 
-	req := httptest.NewRequest(http.MethodGet, "/grok/files/image/sample.jpg", nil)
+	req := httptest.NewRequest(http.MethodGet, "/grok/v1/files/image/sample.jpg", nil)
 	rec := httptest.NewRecorder()
 	h.HandleFiles(rec, req)
 	if rec.Code != http.StatusOK {
@@ -61,7 +61,7 @@ func TestHandleFiles(t *testing.T) {
 		t.Fatalf("body=%q want=abc", body)
 	}
 
-	req404 := httptest.NewRequest(http.MethodGet, "/grok/files/image/notfound.jpg", nil)
+	req404 := httptest.NewRequest(http.MethodGet, "/grok/v1/files/image/notfound.jpg", nil)
 	rec404 := httptest.NewRecorder()
 	h.HandleFiles(rec404, req404)
 	if rec404.Code != http.StatusNotFound {

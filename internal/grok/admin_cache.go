@@ -71,7 +71,7 @@ func listCachedEntries(mediaType string) ([]cacheEntry, int64, error) {
 			MediaType: typ,
 			Name:      name,
 			Path:      typ + "/" + name,
-			URL:       "/grok/files/" + typ + "/" + name,
+			URL:       "/grok/v1/files/" + typ + "/" + name,
 			Size:      info.Size(),
 			UpdatedAt: info.ModTime().UnixMilli(),
 		})
@@ -95,7 +95,7 @@ func parseCacheDeleteTarget(req cacheDeleteItemRequest) (string, string, bool) {
 		return "", "", false
 	}
 	if !strings.HasPrefix(rawPath, "/") {
-		rawPath = "/grok/files/" + strings.TrimLeft(rawPath, "/")
+		rawPath = "/grok/v1/files/" + strings.TrimLeft(rawPath, "/")
 	}
 	mt, fn, ok := parseFilesPath(rawPath)
 	if !ok {

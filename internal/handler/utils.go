@@ -54,7 +54,7 @@ func channelFromPath(path string) string {
 	if strings.HasPrefix(path, "/warp/") {
 		return "warp"
 	}
-	if strings.HasPrefix(path, "/grok/") {
+	if strings.HasPrefix(path, "/grok/v1/") {
 		return "grok"
 	}
 	return ""

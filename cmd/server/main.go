@@ -128,8 +128,8 @@ func main() {
 	mux.HandleFunc("/orchids/v1/models/", h.HandleModelByID)
 	mux.HandleFunc("/warp/v1/models", h.HandleModels)
 	mux.HandleFunc("/warp/v1/models/", h.HandleModelByID)
-	mux.HandleFunc("/grok/models", h.HandleModels)
-	mux.HandleFunc("/grok/models/", h.HandleModelByID)
+	mux.HandleFunc("/grok/v1/models", h.HandleModels)
+	mux.HandleFunc("/grok/v1/models/", h.HandleModelByID)
 	// Unified Model Routes (All channels)
 	mux.HandleFunc("/v1/models", h.HandleModels)
 	mux.HandleFunc("/v1/models/", h.HandleModelByID)
@@ -137,10 +137,10 @@ func main() {
 	// OpenAI Compatibility - Channel Specific
 	mux.HandleFunc("/orchids/v1/chat/completions", limiter.Limit(h.HandleMessages))
 	mux.HandleFunc("/warp/v1/chat/completions", limiter.Limit(h.HandleMessages))
-	mux.HandleFunc("/grok/chat/completions", limiter.Limit(grokHandler.HandleChatCompletions))
-	mux.HandleFunc("/grok/images/generations", limiter.Limit(grokHandler.HandleImagesGenerations))
-	mux.HandleFunc("/grok/images/edits", limiter.Limit(grokHandler.HandleImagesEdits))
-	mux.HandleFunc("/grok/files/", grokHandler.HandleFiles)
+	mux.HandleFunc("/grok/v1/chat/completions", limiter.Limit(grokHandler.HandleChatCompletions))
+	mux.HandleFunc("/grok/v1/images/generations", limiter.Limit(grokHandler.HandleImagesGenerations))
+	mux.HandleFunc("/grok/v1/images/edits", limiter.Limit(grokHandler.HandleImagesEdits))
+	mux.HandleFunc("/grok/v1/files/", grokHandler.HandleFiles)
 
 	// Public routes
 	mux.HandleFunc("/api/login", apiHandler.HandleLogin)

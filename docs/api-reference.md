@@ -8,6 +8,10 @@
 | `/orchids/v1/messages/count_tokens` | POST | Orchids 估算输入 Token | 无 |
 | `/warp/v1/messages` | POST | Warp Claude API 代理端点 | 无 |
 | `/warp/v1/messages/count_tokens` | POST | Warp 估算输入 Token | 无 |
+| `/grok/v1/chat/completions` | POST | Grok OpenAI 兼容聊天 | 无 |
+| `/grok/v1/images/generations` | POST | Grok 图像生成 | 无 |
+| `/grok/v1/images/edits` | POST | Grok 图像编辑 | 无 |
+| `/grok/v1/models` | GET | Grok 模型列表 | 无 |
 | `/api/accounts` | GET | 获取所有账号列表 | Basic Auth |
 | `/api/accounts` | POST | 创建新账号 | Basic Auth |
 | `/api/accounts/{id}` | GET | 获取单个账号 | Basic Auth |

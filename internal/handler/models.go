@@ -86,15 +86,15 @@ func (h *Handler) HandleModelByID(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Extract ID from path
-	// Paths could be: /v1/models/{id}, /orchids/v1/models/{id}, /warp/v1/models/{id}, /grok/models/{id}
+	// Paths could be: /v1/models/{id}, /orchids/v1/models/{id}, /warp/v1/models/{id}, /grok/v1/models/{id}
 	path := r.URL.Path
 	var id string
 	if strings.HasPrefix(path, "/orchids/v1/models/") {
 		id = strings.TrimPrefix(path, "/orchids/v1/models/")
 	} else if strings.HasPrefix(path, "/warp/v1/models/") {
 		id = strings.TrimPrefix(path, "/warp/v1/models/")
-	} else if strings.HasPrefix(path, "/grok/models/") {
-		id = strings.TrimPrefix(path, "/grok/models/")
+	} else if strings.HasPrefix(path, "/grok/v1/models/") {
+		id = strings.TrimPrefix(path, "/grok/v1/models/")
 	} else {
 		id = strings.TrimPrefix(path, "/v1/models/")
 	}

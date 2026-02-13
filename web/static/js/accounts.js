@@ -267,59 +267,71 @@ function updateAccountHealth(id, ok, msg = '') {
   };
 }
 
-// Get status badge for account
-function statusBadge(acc) {
+function normalizeStatusCode(statusCode) {
+  if (statusCode === null || statusCode === undefined) return '';
+  return String(statusCode).trim();
+}
+
+function evaluateAccountStatus(acc) {
   const health = accountHealth[acc.id];
   if (health && !health.ok) {
-    return { text: '异常', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: health.msg || '检测失败' };
+    return { normal: false, text: '异常', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: health.msg || '检测失败' };
   }
   if (!acc.enabled) {
-    return { text: '禁用', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '账号已禁用' };
+    return { normal: false, text: '禁用', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '账号已禁用' };
   }
-  // Check backend status_code
-  if (acc.status_code) {
-    switch (acc.status_code) {
+  const statusCode = normalizeStatusCode(acc.status_code);
+  if (statusCode) {
+    switch (statusCode) {
       case '429':
-        return { text: '限流', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '请求过于频繁 (429)' };
+        return { normal: false, text: '限流', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '请求过于频繁 (429)' };
       case '401':
-        return { text: '未授权', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '认证失败 (401)' };
+        return { normal: false, text: '未授权', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '认证失败 (401)' };
       case '403':
-        return { text: '禁止访问', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '访问被拒绝 (403)' };
+        return { normal: false, text: '禁止访问', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '访问被拒绝 (403)' };
       case '404':
-        return { text: '不存在', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '资源不存在 (404)' };
+        return { normal: false, text: '不存在', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '资源不存在 (404)' };
       default:
-        return { text: '异常', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '状态异常: ' + acc.status_code };
+        return { normal: false, text: '异常', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '状态异常: ' + statusCode };
     }
   }
+
   const type = normalizeAccountType(acc);
   if (type === 'warp') {
     if (!getAccountToken(acc)) {
-      return { text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少 Refresh Token' };
+      return { normal: false, text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少 Refresh Token' };
     }
   } else if (type === 'grok') {
     if (!getAccountToken(acc)) {
-      return { text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少 SSO Token' };
+      return { normal: false, text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少 SSO Token' };
     }
   } else if (!acc.session_id && !acc.session_cookie) {
-    return { text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少会话信息' };
+    return { normal: false, text: '待补全', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.16)', tip: '缺少会话信息' };
   }
+
   if (acc.usage_limit > 0) {
-    const type = normalizeAccountType(acc);
     const used = acc.usage_current || 0;
     const limit = acc.usage_limit || 0;
-    // Orchids: backend stores used credits, UI expects remaining credits.
     if (type === 'orchids') {
       const remaining = Math.max(0, limit - used);
       if (remaining <= 0) {
-        return { text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (剩余 0 / ' + Math.floor(limit) + ')' };
+        return { normal: false, text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (剩余 0 / ' + Math.floor(limit) + ')' };
       }
-    } else {
-      if (used >= limit) {
-        return { text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (已用 ' + Math.floor(used) + ' / ' + Math.floor(limit) + ')' };
-      }
+    } else if (used >= limit) {
+      return { normal: false, text: '配额已满', color: '#fb7185', bg: 'rgba(251, 113, 133, 0.16)', tip: '配额已用尽 (已用 ' + Math.floor(used) + ' / ' + Math.floor(limit) + ')' };
     }
   }
-  return { text: '正常', color: '#34d399', bg: 'rgba(52, 211, 153, 0.16)', tip: '状态正常' };
+
+  return { normal: true, text: '正常', color: '#34d399', bg: 'rgba(52, 211, 153, 0.16)', tip: '状态正常' };
+}
+
+function isAccountAbnormal(acc) {
+  return !evaluateAccountStatus(acc).normal;
+}
+
+// Get status badge for account
+function statusBadge(acc) {
+  return evaluateAccountStatus(acc);
 }
 
 // Check single account
@@ -364,7 +376,7 @@ async function deleteAllAccounts() {
 
 // Clear abnormal accounts
 async function clearAbnormalAccounts() {
-  const abnormal = accounts.filter(a => !a.enabled || a.status_code || (accountHealth[a.id] && !accountHealth[a.id].ok));
+  const abnormal = accounts.filter(isAccountAbnormal);
   if (abnormal.length === 0) {
     showToast("没有异常账号", "info");
     return;
@@ -709,11 +721,11 @@ function updatePageSize(size) {
 // Update statistics
 function updateStats() {
   const total = accounts.length;
-  const enabled = accounts.filter((a) => a.enabled).length;
-  const abnormal = accounts.filter((a) => !a.enabled || a.status_code || (accountHealth[a.id] && !accountHealth[a.id].ok)).length;
+  const abnormal = accounts.filter(isAccountAbnormal).length;
+  const normal = Math.max(0, total - abnormal);
 
   document.getElementById("totalAccounts").textContent = total;
-  document.getElementById("enabledAccounts").textContent = enabled;
+  document.getElementById("enabledAccounts").textContent = normal;
   document.getElementById("disabledAccounts").textContent = abnormal;
 
   // Attempt to update selected if element exists (it should)
@@ -726,7 +738,7 @@ function updateStats() {
   if (footerTotal) footerTotal.textContent = total;
 
   const footerNormal = document.getElementById("footerNormal");
-  if (footerNormal) footerNormal.textContent = enabled;
+  if (footerNormal) footerNormal.textContent = normal;
 
   const footerAbnormal = document.getElementById("footerAbnormal");
   if (footerAbnormal) footerAbnormal.textContent = abnormal;

@@ -321,7 +321,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				if progress >= 100 && strings.TrimSpace(videoURL) != "" {
 					finalURL := strings.TrimSpace(videoURL)
 					if name, err := h.cacheMediaURL(context.Background(), token, finalURL, "video"); err == nil && name != "" {
-						finalURL = "/grok/files/video/" + name
+						finalURL = "/grok/v1/files/video/" + name
 					}
 					emitChunk(map[string]interface{}{"content": finalURL}, nil)
 				}
@@ -374,7 +374,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 
 	if videoURL != "" {
 		if name, err := h.cacheMediaURL(context.Background(), token, videoURL, "video"); err == nil && name != "" {
-			videoURL = "/grok/files/video/" + name
+			videoURL = "/grok/v1/files/video/" + name
 		}
 		if content.Len() > 0 {
 			content.WriteString("\n")
@@ -508,7 +508,7 @@ func (h *Handler) cacheMediaURL(ctx context.Context, token, rawURL, mediaType st
 func (h *Handler) imageOutputValue(ctx context.Context, token, url, format string) (string, error) {
 	if normalizeImageResponseFormat(format) == "url" {
 		if name, err := h.cacheMediaURL(ctx, token, url, "image"); err == nil && name != "" {
-			return "/grok/files/image/" + name, nil
+			return "/grok/v1/files/image/" + name, nil
 		}
 		return strings.TrimSpace(url), nil
 	}
@@ -935,10 +935,10 @@ func sanitizeCachedFilename(raw string) string {
 }
 
 func parseFilesPath(rawPath string) (mediaType string, fileName string, ok bool) {
-	if !strings.HasPrefix(rawPath, "/grok/files/") {
+	if !strings.HasPrefix(rawPath, "/grok/v1/files/") {
 		return "", "", false
 	}
-	path := strings.TrimPrefix(rawPath, "/grok/files/")
+	path := strings.TrimPrefix(rawPath, "/grok/v1/files/")
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", "", false
