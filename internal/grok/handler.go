@@ -1531,6 +1531,8 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	}
 
 	var urls []string
+	var debugHTTP []string
+	var debugAsset []string
 	for i := 0; i < callsNeeded; i++ {
 		resp, err := h.client.doChat(r.Context(), token, onePayload)
 		if err != nil {
@@ -1542,7 +1544,11 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		err = parseUpstreamLines(resp.Body, func(line map[string]interface{}) error {
 			if mr, ok := line["modelResponse"].(map[string]interface{}); ok {
 				urls = append(urls, extractImageURLs(mr)...)
+				debugHTTP = append(debugHTTP, collectHTTPStrings(mr, 50)...)
+				debugAsset = append(debugAsset, collectAssetLikeStrings(mr, 100)...)
 			}
+			debugHTTP = append(debugHTTP, collectHTTPStrings(line, 50)...)
+			debugAsset = append(debugAsset, collectAssetLikeStrings(line, 100)...)
 			return nil
 		})
 		resp.Body.Close()
@@ -1552,13 +1558,13 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	urls = uniqueStrings(urls)
+	urls = normalizeImageURLs(urls, req.N)
+	if len(urls) == 0 {
+		urls = appendImageCandidates(urls, uniqueStrings(debugHTTP), uniqueStrings(debugAsset), req.N)
+	}
 	if len(urls) == 0 {
 		http.Error(w, "no image generated", http.StatusBadGateway)
 		return
-	}
-	if len(urls) > req.N {
-		urls = urls[:req.N]
 	}
 
 	field := imageResponseField(req.ResponseFormat)
