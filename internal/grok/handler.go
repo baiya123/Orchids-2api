@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,20 @@ func formatImageMarkdown(u string) string {
 	}
 	// Blank lines around images improve rendering in some clients.
 	return "\n\n![](" + u + ")\n\n"
+}
+
+var reImageURLInText = regexp.MustCompile(`https?://[^\s"')>]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s"')>]*)?`)
+
+func extractImageURLsFromText(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	m := reImageURLInText.FindAllString(s, -1)
+	if len(m) == 0 {
+		return nil
+	}
+	return uniqueStrings(m)
 }
 
 func isLikelyImageURL(u string) bool {
@@ -882,6 +897,21 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 						for _, p := range debugAsset {
 							p = strings.TrimSpace(p)
 							if p == "" || strings.Contains(p, "grok-3") || strings.Contains(p, "grok-4") {
+								continue
+							}
+							// Some image_card payloads appear as JSON strings in debugAsset.
+							if strings.HasPrefix(p, "{") {
+								for _, u := range extractImageURLsFromText(p) {
+									if isLikelyImageURL(u) {
+										urls = append(urls, u)
+										if len(urls) >= n {
+											break
+										}
+									}
+								}
+								if len(urls) >= n {
+									break
+								}
 								continue
 							}
 							if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
