@@ -944,10 +944,23 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		}
 	}
 	// Emit any pending part-0 previews only if we never saw a full variant.
+	// Try to fetch/emit the full variant first; if it doesn't exist, fall back to the preview.
 	for full, part := range pendingPart {
 		if seenFull[full] {
 			continue
 		}
+		// Try full (cache through this server for client reachability).
+		if name, err := h.cacheMediaURL(context.Background(), token, full, "image"); err == nil && name != "" {
+			val := "/grok/v1/files/image/" + name
+			if publicBase != "" && strings.HasPrefix(val, "/") {
+				val = publicBase + val
+			}
+			if md := formatImageMarkdown(val); md != "" {
+				emitChunk(map[string]interface{}{"content": md}, nil)
+			}
+			continue
+		}
+		// Fall back to preview.
 		emitImageURL(part)
 	}
 
