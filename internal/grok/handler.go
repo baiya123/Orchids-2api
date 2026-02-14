@@ -91,6 +91,21 @@ func preferFullOverPart(urls []string) []string {
 	return out
 }
 
+func normalizeImageURLs(urls []string, n int) []string {
+	urls = uniqueStrings(urls)
+	filtered := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if isLikelyImageURL(u) {
+			filtered = append(filtered, u)
+		}
+	}
+	urls = preferFullOverPart(filtered)
+	if n > 0 && len(urls) > n {
+		urls = urls[:n]
+	}
+	return urls
+}
+
 func extractPreferredImageURLsFromJSONText(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" || !strings.HasPrefix(s, "{") {
@@ -942,18 +957,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 						slog.Info("grok imagine fallback: observed asset-like strings", "count", len(debugAsset), "items", debugAsset)
 					}
 				}
-				// Keep only URLs that are actually renderable as images.
-				urls = uniqueStrings(urls)
-				filtered := make([]string, 0, len(urls))
-				for _, u := range urls {
-					if isLikelyImageURL(u) {
-						filtered = append(filtered, u)
-					}
-				}
-				urls = preferFullOverPart(filtered)
-				if len(urls) > n {
-					urls = urls[:n]
-				}
+				urls = normalizeImageURLs(urls, n)
 				// If we got no renderable image URLs from the primary parsers, try to salvage
 				// direct image URLs from observed http strings (e.g. image_card.original fields).
 				if len(urls) == 0 && len(debugHTTP) > 0 {
@@ -1171,18 +1175,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 						slog.Info("grok imagine fallback: observed asset-like strings", "count", len(debugAsset), "items", debugAsset)
 					}
 				}
-				// Keep only URLs that are actually renderable as images.
-				urls = uniqueStrings(urls)
-				filtered := make([]string, 0, len(urls))
-				for _, u := range urls {
-					if isLikelyImageURL(u) {
-						filtered = append(filtered, u)
-					}
-				}
-				urls = preferFullOverPart(filtered)
-				if len(urls) > n {
-					urls = urls[:n]
-				}
+				urls = normalizeImageURLs(urls, n)
 				if len(urls) == 0 {
 					if len(debugAsset) > 0 {
 						for _, p := range debugAsset {
