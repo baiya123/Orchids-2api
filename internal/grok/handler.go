@@ -1045,10 +1045,16 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		looksLikeImageReq := !neg && desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture"))
 		if looksLikeImageReq && len(emitted) == 0 {
 			n := inferRequestedImageCount(desc, 2)
-			// (silenced progress message)
-			ctx2, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			if n < 1 {
+				n = 1
+			}
+
+			// Auto-mode: instead of grok-imagine fallback, call our own /images/generations logic
+			// to reliably obtain image URLs, then emit them as Markdown. Keep it silent on failure.
+			ctx2, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			imgs, reason := h.generateImagesFallback(ctx2, token, desc, n)
+			imgs, _ := h.generateImagesFallback(ctx2, token, desc, n)
+			imgs = normalizeImageURLs(imgs, n)
 			if len(imgs) > 0 {
 				var out strings.Builder
 				out.WriteString("\n\n")
@@ -1065,9 +1071,6 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 					out.WriteString(")\n")
 				}
 				emitChunk(map[string]interface{}{"content": out.String()}, nil)
-			} else {
-				// (silenced fallback failure message)
-				_ = reason
 			}
 		}
 	}
@@ -1157,7 +1160,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 			if n > 0 && len(imgs) < n {
 				ctx2, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 				defer cancel()
-				gen, reason := h.generateImagesFallback(ctx2, token, desc, n)
+				gen, _ := h.generateImagesFallback(ctx2, token, desc, n)
 				if len(gen) > 0 {
 					for _, u := range gen {
 						val, errV := h.imageOutputValue(context.Background(), token, u, "url")
@@ -1169,9 +1172,6 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 						}
 						finalContent += formatImageMarkdown(val)
 					}
-				} else {
-					// (silenced fallback failure message)
-					_ = reason
 				}
 			}
 		}
