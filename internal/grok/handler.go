@@ -783,9 +783,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	id := "chatcmpl_" + randomHex(8)
 	sentRole := false
 	lastMessage := ""
-	sawToken := false
 	sentAny := false
-	emittedText := false
 	var rawAll strings.Builder
 	// Image URL stream handling: prefer full image variants over -part-0 previews.
 	seenFull := map[string]bool{}
@@ -815,11 +813,6 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		writeSSE(w, "", encodeJSON(chunk))
 		if flusher != nil {
 			flusher.Flush()
-		}
-		if c, ok := delta["content"].(string); ok {
-			if strings.TrimSpace(c) != "" {
-				emittedText = true
-			}
 		}
 		sentAny = true
 	}
@@ -863,7 +856,6 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		}
 		if tokenDelta, ok := resp["token"].(string); ok && tokenDelta != "" {
 			rawAll.WriteString(tokenDelta)
-			sawToken = true
 			if mf == nil {
 				// Vision Q/A path: keep text intact but strip full tool/render blocks when present.
 				cleaned := stripToolAndRenderMarkup(tokenDelta)
@@ -871,34 +863,26 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				if cleaned != "" {
 					emitChunk(map[string]interface{}{"content": cleaned}, nil)
 				}
-			} else {
-				if cleaned := mf.feed(tokenDelta); cleaned != "" {
-					cleaned = stripLeadingAngleNoise(cleaned)
-					if cleaned != "" {
-						emitChunk(map[string]interface{}{"content": cleaned}, nil)
-					}
-				}
 			}
+			// Text streaming path (mf != nil): do NOT emit token deltas.
+			// Grok token stream can include partial UTF-8 boundaries and markup noise; rely on modelResponse.message instead.
 		}
 		if mr, ok := resp["modelResponse"].(map[string]interface{}); ok {
 			if msg, ok := mr["message"].(string); ok && strings.TrimSpace(msg) != "" && msg != lastMessage {
 				lastMessage = msg
 				rawAll.WriteString(msg)
-				// If upstream provides token streaming but our filter suppresses it (e.g. markup/noise),
-				// still emit the message once to avoid losing all text.
-				if !sawToken || !emittedText {
-					if mf == nil {
-						cleaned := stripToolAndRenderMarkup(msg)
-						cleaned = stripLeadingAngleNoise(sanitizeText(cleaned))
+				if mf == nil {
+					cleaned := stripToolAndRenderMarkup(msg)
+					cleaned = stripLeadingAngleNoise(sanitizeText(cleaned))
+					if cleaned != "" {
+						emitChunk(map[string]interface{}{"content": cleaned}, nil)
+					}
+				} else {
+					// Text streaming path: feed full messages into the filter (handles tool/render blocks) and emit the cleaned text.
+					if cleaned := mf.feed(msg); cleaned != "" {
+						cleaned = stripLeadingAngleNoise(cleaned)
 						if cleaned != "" {
 							emitChunk(map[string]interface{}{"content": cleaned}, nil)
-						}
-					} else {
-						if cleaned := mf.feed(msg); cleaned != "" {
-							cleaned = stripLeadingAngleNoise(cleaned)
-							if cleaned != "" {
-								emitChunk(map[string]interface{}{"content": cleaned}, nil)
-							}
 						}
 					}
 				}
