@@ -34,30 +34,46 @@ func sanitizeText(s string) string {
 
 func stripLeadingAngleNoise(s string) string {
 	// Remove obvious leftover fragments like "<<<" produced by suppressed markup.
-	// Keep it conservative: only strip runs of '<' when they appear at line starts.
+	// More robust than line-start only: strip runs of '<' (len>=3) that appear at
+	// the beginning of a line OR after whitespace.
 	if s == "" {
 		return s
 	}
+	var b strings.Builder
+	b.Grow(len(s))
 
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		trimmed := strings.TrimLeft(line, "\r\t ")
-		if strings.HasPrefix(trimmed, "<<<") {
-			trimmed = strings.TrimLeft(trimmed, "<")
-			trimmed = strings.TrimLeft(trimmed, "\r\t ")
-			lines[i] = trimmed
-		} else {
-			lines[i] = line
+	isWS := func(c byte) bool {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			return true
+		default:
+			return false
 		}
 	}
-	out := strings.Join(lines, "\n")
-	// also handle the very beginning (no leading newline)
-	out = strings.TrimLeft(out, "\r\t ")
-	if strings.HasPrefix(out, "<<<") {
-		out = strings.TrimLeft(out, "<")
-		out = strings.TrimLeft(out, "\r\t ")
+
+	for i := 0; i < len(s); {
+		if s[i] == '<' {
+			// count run
+			j := i
+			for j < len(s) && s[j] == '<' {
+				j++
+			}
+			run := j - i
+			prevWS := i == 0 || isWS(s[i-1])
+			if run >= 3 && prevWS {
+				// skip all '<' in this run
+				i = j
+				// also skip immediate whitespace after it
+				for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+					i++
+				}
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
 	}
-	return out
+	return b.String()
 }
 
 const maxEditImageBytes = 50 * 1024 * 1024
