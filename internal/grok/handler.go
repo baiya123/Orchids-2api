@@ -508,7 +508,8 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			n := inferRequestedImageCount(text, 2)
 			ctx2, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 			defer cancel()
-			imgs, _ := h.generateViaImagesGenerations(ctx2, text, n, "url", publicBase)
+			imgs, errImg := h.callLocalImagesGenerations(ctx2, text, n)
+			_ = errImg
 			imgs = normalizeImageURLs(imgs, n)
 			if len(imgs) > 0 {
 				h.replyChatImagesOnly(w, req.Model, imgs, req.Stream)
