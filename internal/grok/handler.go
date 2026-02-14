@@ -702,7 +702,10 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	// Flush any remaining buffered text (avoids "no content" when stream ends quickly).
 	if mf != nil {
 		if tail := mf.flush(); tail != "" {
-			emitChunk(map[string]interface{}{"content": tail}, nil)
+			tail = stripLeadingAngleNoise(tail)
+			if tail != "" {
+				emitChunk(map[string]interface{}{"content": tail}, nil)
+			}
 		}
 	}
 
@@ -723,6 +726,10 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		}
 		// 3) If we see grok render image cards but no URLs, also fallback to user prompt.
 		if len(args) == 0 && strings.Contains(rawText, "grok:render") && looksLikeImageReq {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
+		}
+		// 4) Some responses only include xai tool usage cards (no explicit search_images args).
+		if len(args) == 0 && strings.Contains(rawText, "tool_usage_card") && looksLikeImageReq {
 			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
 		}
 	}
