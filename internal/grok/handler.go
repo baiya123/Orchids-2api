@@ -577,6 +577,7 @@ func (h *Handler) buildChatPayload(ctx context.Context, token string, spec Model
 		payload["imageGenerationCount"] = inferRequestedImageCount(text, 1)
 		payload["disableTextFollowUps"] = true
 		payload["returnRawGrokInXaiRequest"] = false
+		payload["disableMemory"] = false
 	}
 
 	if !spec.IsVideo {
