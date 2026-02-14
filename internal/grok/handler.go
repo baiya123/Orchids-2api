@@ -1016,8 +1016,12 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 						break
 					}
 					before := len(cur)
-					_ = before
-					desc2 := fmt.Sprintf("%s\n\n[seed %s: generate a different image than previous outputs]", a.ImageDescription, randomHex(8))
+					variants := []string{"安福路白天", "外滩夜景", "南京路人潮", "法租界梧桐", "弄堂市井", "地铁口"}
+					vi := 0
+					if before > 0 {
+						vi = (before / 2) % len(variants)
+					}
+					desc2 := fmt.Sprintf("%s\n\n请生成与之前不同的画面，变体：%s（seed %s）", a.ImageDescription, variants[vi], randomHex(8))
 					payload := h.client.chatPayload(imSpec, "Image Generation: "+desc2, true, need)
 					resp2, err2 := h.client.doChat(context.Background(), token, payload)
 					if err2 != nil {
@@ -1205,8 +1209,12 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 						break
 					}
 					before := len(cur)
-					_ = before
-					desc2 := fmt.Sprintf("%s\n\n[seed %s: generate a different image than previous outputs]", a.ImageDescription, randomHex(8))
+					variants := []string{"安福路白天", "外滩夜景", "南京路人潮", "法租界梧桐", "弄堂市井", "地铁口"}
+					vi := 0
+					if before > 0 {
+						vi = (before / 2) % len(variants)
+					}
+					desc2 := fmt.Sprintf("%s\n\n请生成与之前不同的画面，变体：%s（seed %s）", a.ImageDescription, variants[vi], randomHex(8))
 					payload := h.client.chatPayload(imSpec, "Image Generation: "+desc2, true, need)
 					resp2, err2 := h.client.doChat(context.Background(), token, payload)
 					if err2 != nil {
