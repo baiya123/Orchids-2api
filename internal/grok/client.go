@@ -76,22 +76,22 @@ func (c *Client) userAgent() string {
 // baseHeaders 是预分配的请求头模板，包含所有固定的请求头
 // 这避免了在每次请求时重新分配这些固定头，提升性能
 var baseHeaders = http.Header{
-	"Accept":              []string{"*/*"},
-	"Accept-Language":     []string{"zh-CN,zh;q=0.9,en;q=0.8"},
-	"Cache-Control":       []string{"no-cache"},
-	"Content-Type":        []string{"application/json"},
-	"Origin":              []string{"https://grok.com"},
-	"Pragma":              []string{"no-cache"},
-	"Referer":             []string{"https://grok.com/"},
-	"Priority":            []string{"u=1, i"},
-	"Sec-Ch-Ua":           []string{`"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"`},
-	"Sec-Ch-Ua-Platform":  []string{`"macOS"`},
-	"Sec-Fetch-Dest":      []string{"empty"},
-	"Sec-Fetch-Mode":      []string{"cors"},
-	"Sec-Fetch-Site":      []string{"same-origin"},
-	"sec-ch-ua":           []string{`"Chromium";v="131", "Google Chrome";v="131", "Not_A Brand";v="24"`},
-	"sec-ch-ua-mobile":    []string{"?0"},
-	"sec-ch-ua-platform":  []string{`"Windows"`},
+	"Accept":             []string{"*/*"},
+	"Accept-Language":    []string{"zh-CN,zh;q=0.9,en;q=0.8"},
+	"Cache-Control":      []string{"no-cache"},
+	"Content-Type":       []string{"application/json"},
+	"Origin":             []string{"https://grok.com"},
+	"Pragma":             []string{"no-cache"},
+	"Referer":            []string{"https://grok.com/"},
+	"Priority":           []string{"u=1, i"},
+	"Sec-Ch-Ua":          []string{`"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"`},
+	"Sec-Ch-Ua-Platform": []string{`"macOS"`},
+	"Sec-Fetch-Dest":     []string{"empty"},
+	"Sec-Fetch-Mode":     []string{"cors"},
+	"Sec-Fetch-Site":     []string{"same-origin"},
+	"sec-ch-ua":          []string{`"Chromium";v="131", "Google Chrome";v="131", "Not_A Brand";v="24"`},
+	"sec-ch-ua-mobile":   []string{"?0"},
+	"sec-ch-ua-platform": []string{`"Windows"`},
 }
 
 func (c *Client) headers(token string) http.Header {
@@ -100,12 +100,12 @@ func (c *Client) headers(token string) http.Header {
 	for k, v := range baseHeaders {
 		h[k] = v
 	}
-	
+
 	// 添加动态请求头
 	h.Set("User-Agent", c.userAgent())
 	h.Set("x-statsig-id", buildStatsigID())
 	h.Set("x-xai-request-id", randomHex(16))
-	
+
 	// 构建 Cookie
 	cookie := "sso=" + token + "; sso-rw=" + token
 	if c.cfg != nil && strings.TrimSpace(c.cfg.GrokCFClearance) != "" {
@@ -115,7 +115,7 @@ func (c *Client) headers(token string) http.Header {
 		cookie += "; __cf_bm=" + strings.TrimSpace(c.cfg.GrokCFBM)
 	}
 	h.Set("Cookie", cookie)
-	
+
 	return h
 }
 
@@ -123,9 +123,6 @@ func (c *Client) chatPayload(spec ModelSpec, text string, noMemory bool, imageCo
 	cnt := imageCount
 	if cnt <= 0 {
 		cnt = 2
-	}
-	if cnt > 4 {
-		cnt = 4
 	}
 	payload := map[string]interface{}{
 		"temporary":             true,

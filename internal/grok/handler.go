@@ -1,11 +1,11 @@
 package grok
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -480,9 +480,9 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	// Retry once on transient account failures (e.g. 403/429) by switching account.
 	var (
-		acc  *store.Account
+		acc   *store.Account
 		token string
-		resp *http.Response
+		resp  *http.Response
 	)
 	for attempt := 0; attempt < 2; attempt++ {
 		acc, token, err = h.selectAccount(r.Context())
@@ -999,23 +999,27 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		if ok {
 			for _, a := range args {
 				n := a.NumberOfImages
-				if n > 4 {
-					n = 4
-				}
 				var urls []string
 				var debugHTTP []string
 				var debugAsset []string
-				// grok upstream often returns 2 images per call; loop to reach n.
-				for attempt := 0; attempt < 3; attempt++ {
+				// grok upstream may return fewer images than requested per call; loop until we reach n
+				// or until a call yields no new unique image URLs.
+				for {
 					cur := normalizeImageURLs(urls, n)
-					if len(cur) >= n {
+					if n > 0 && len(cur) >= n {
 						urls = cur
 						break
 					}
 					need := n - len(cur)
+					if n > 0 && need <= 0 {
+						urls = cur
+						break
+					}
+					before := len(cur)
 					payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true, need)
 					resp2, err2 := h.client.doChat(context.Background(), token, payload)
 					if err2 != nil {
+						urls = cur
 						break
 					}
 					_ = parseUpstreamLines(resp2.Body, func(line map[string]interface{}) error {
@@ -1035,6 +1039,11 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 						return nil
 					})
 					resp2.Body.Close()
+					after := len(normalizeImageURLs(urls, n))
+					if after <= before {
+						urls = normalizeImageURLs(urls, n)
+						break
+					}
 				}
 				if h.cfg != nil && h.cfg.GrokDebugImageFallback {
 					debugHTTP = uniqueStrings(debugHTTP)
@@ -1177,23 +1186,27 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 		if ok {
 			for _, a := range args {
 				n := a.NumberOfImages
-				if n > 4 {
-					n = 4 // keep it small; the original tool can request many
-				}
 				var urls []string
 				var debugHTTP []string
 				var debugAsset []string
-				// grok upstream often returns 2 images per call; loop to reach n.
-				for attempt := 0; attempt < 3; attempt++ {
+				// grok upstream may return fewer images than requested per call; loop until we reach n
+				// or until a call yields no new unique image URLs.
+				for {
 					cur := normalizeImageURLs(urls, n)
-					if len(cur) >= n {
+					if n > 0 && len(cur) >= n {
 						urls = cur
 						break
 					}
 					need := n - len(cur)
+					if n > 0 && need <= 0 {
+						urls = cur
+						break
+					}
+					before := len(cur)
 					payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true, need)
 					resp2, err2 := h.client.doChat(context.Background(), token, payload)
 					if err2 != nil {
+						urls = cur
 						break
 					}
 					_ = parseUpstreamLines(resp2.Body, func(line map[string]interface{}) error {
@@ -1213,6 +1226,11 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 						return nil
 					})
 					resp2.Body.Close()
+					after := len(normalizeImageURLs(urls, n))
+					if after <= before {
+						urls = normalizeImageURLs(urls, n)
+						break
+					}
 				}
 				if h.cfg != nil && h.cfg.GrokDebugImageFallback {
 					debugHTTP = uniqueStrings(debugHTTP)
@@ -1245,7 +1263,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 					}
 					finalContent += "![]("
 					finalContent += val
-					finalContent += ")\n"
+					finalContent += ")\\n"
 				}
 			}
 		}
