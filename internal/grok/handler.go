@@ -1462,20 +1462,22 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	var debugHTTP []string
 	var debugAsset []string
 
-	// Grok upstream may return only 2 images per call and may repeat. To reliably reach N,
-	// we request 1 image per call with a varied prompt and stop when no new URLs appear.
-	maxAttempts := req.N * 3
-	if maxAttempts < 3 {
-		maxAttempts = 3
+	// Grok upstream may return only 2 images per call and may repeat.
+	// To reach N, request 1 image per call and vary the prompt (scene/person/composition) to reduce repeats.
+	maxAttempts := req.N * 8
+	if maxAttempts < 8 {
+		maxAttempts = 8
 	}
+	variants := []string{"安福路白天街拍", "外滩夜景街拍", "南京路人潮街拍", "法租界梧桐街拍", "弄堂市井街拍", "陆家嘴现代街拍", "地铁口街拍", "雨天街拍"}
 	for i := 0; i < maxAttempts; i++ {
 		cur := normalizeImageURLs(urls, 0)
 		if len(cur) >= req.N {
 			urls = cur
 			break
 		}
-		prompt2 := fmt.Sprintf("%s\n\n[variant %d seed %s]", req.Prompt, i+1, randomHex(4))
-		payload := h.client.chatPayload(spec, "Image Generation: "+prompt2, true, 1)
+		v := variants[i%len(variants)]
+		prompt2 := fmt.Sprintf("%s\n\n请生成与之前不同的一张图片：%s。要求不同人物/不同构图/不同光线。（seed %s #%d）", req.Prompt, v, randomHex(4), i+1)
+		payload := h.client.chatPayload(spec, "Image Generation: "+strings.TrimSpace(prompt2), true, 1)
 		resp, err := h.client.doChat(r.Context(), token, payload)
 		if err != nil {
 			h.markAccountStatus(r.Context(), acc, err)
@@ -1499,12 +1501,7 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 			http.Error(w, "stream parse error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		next := normalizeImageURLs(urls, 0)
-		if len(next) <= len(cur) {
-			urls = next
-			break
-		}
-		urls = next
+		urls = normalizeImageURLs(urls, 0)
 	}
 
 	urls = normalizeImageURLs(urls, req.N)
