@@ -1464,12 +1464,16 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 
 	// Grok upstream may return only 2 images per call and may repeat.
 	// To reach N, request 1 image per call and vary the prompt (scene/person/composition) to reduce repeats.
-	maxAttempts := req.N * 8
-	if maxAttempts < 8 {
-		maxAttempts = 8
+	maxAttempts := req.N * 4
+	if maxAttempts < 4 {
+		maxAttempts = 4
 	}
+	deadline := time.Now().Add(60 * time.Second)
 	variants := []string{"安福路白天街拍", "外滩夜景街拍", "南京路人潮街拍", "法租界梧桐街拍", "弄堂市井街拍", "陆家嘴现代街拍", "地铁口街拍", "雨天街拍"}
 	for i := 0; i < maxAttempts; i++ {
+		if time.Now().After(deadline) {
+			break
+		}
 		cur := normalizeImageURLs(urls, 0)
 		if len(cur) >= req.N {
 			urls = cur
