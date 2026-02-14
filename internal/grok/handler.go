@@ -447,12 +447,98 @@ type streamMarkupFilter struct {
 	inRender bool
 }
 
+// Streaming sanitizer/tokenizer.
+// Goal: never leak tool/render markup, never corrupt UTF-8, and keep streaming responsive.
+func (f *streamMarkupFilter) feed(chunk string) string {
+	if f == nil || chunk == "" {
+		return ""
+	}
+	f.pending += chunk
+	// Bound memory
+	if len(f.pending) > 64*1024 {
+		f.pending = f.pending[len(f.pending)-64*1024:]
+	}
+
+	const toolStart = "xai:tool_usage_card"
+	const toolEnd = "</xai:tool_usage_card>"
+	const renderStart = "<grok:render"
+	const renderEnd = "</grok:render>"
+
+	var out strings.Builder
+
+	for {
+		lower := strings.ToLower(f.pending)
+
+		if f.inTool {
+			end := strings.Index(lower, toolEnd)
+			if end < 0 {
+				// wait for more data
+				break
+			}
+			f.pending = f.pending[end+len(toolEnd):]
+			f.inTool = false
+			continue
+		}
+		if f.inRender {
+			end := strings.Index(lower, renderEnd)
+			if end < 0 {
+				break
+			}
+			f.pending = f.pending[end+len(renderEnd):]
+			f.inRender = false
+			continue
+		}
+
+		idxTool := strings.Index(lower, toolStart)
+		idxRender := strings.Index(lower, renderStart)
+		idx := -1
+		kind := ""
+		if idxTool >= 0 {
+			idx = idxTool
+			kind = "tool"
+		}
+		if idxRender >= 0 && (idx < 0 || idxRender < idx) {
+			idx = idxRender
+			kind = "render"
+		}
+
+		if idx < 0 {
+			// No markers. Emit everything except a tail to avoid cutting potential markers.
+			keep := 512
+			if len(f.pending) <= keep {
+				break
+			}
+			safe := validUTF8Prefix(f.pending[:len(f.pending)-keep])
+			safe = stripLeadingAngleNoise(sanitizeText(safe))
+			if safe != "" {
+				out.WriteString(safe)
+			}
+			f.pending = f.pending[len(f.pending)-keep:]
+			break
+		}
+
+		// Emit prefix before marker
+		prefix := validUTF8Prefix(f.pending[:idx])
+		prefix = stripLeadingAngleNoise(sanitizeText(prefix))
+		if prefix != "" {
+			out.WriteString(prefix)
+		}
+		f.pending = f.pending[idx:]
+		if kind == "tool" {
+			f.inTool = true
+		} else {
+			f.inRender = true
+		}
+	}
+
+	return out.String()
+}
+
 func (f *streamMarkupFilter) flush() string {
 	if f == nil {
 		return ""
 	}
 	if f.inTool || f.inRender {
-		// Can't safely flush while inside suppressed markup.
 		return ""
 	}
 	if strings.TrimSpace(f.pending) == "" {
@@ -478,110 +564,7 @@ func validUTF8Prefix(s string) string {
 	return ""
 }
 
-func (f *streamMarkupFilter) feed(chunk string) string {
-	if chunk == "" {
-		return ""
-	}
-	f.pending += chunk
-	var out strings.Builder
-
-	const toolStart = "xai:tool_usage_card"
-	const toolEnd = "</xai:tool_usage_card>"
-	// Grok render blocks look like '<grok:render ...>' but can be split across chunks.
-	const renderStart = "<grok:render"
-	const renderEnd = "</grok:render>"
-
-	for {
-		lower := strings.ToLower(f.pending)
-		if f.inTool {
-			end := strings.Index(lower, toolEnd)
-			if end < 0 {
-				if len(f.pending) > 16384 {
-					f.pending = ""
-					f.inTool = false
-				}
-				break
-			}
-			f.pending = f.pending[end+len(toolEnd):]
-			f.inTool = false
-			continue
-		}
-		if f.inRender {
-			end := strings.Index(lower, renderEnd)
-			if end < 0 {
-				// Recovery: if we never see a closing tag, don't swallow the whole stream forever.
-				if len(f.pending) > 16384 {
-					f.pending = ""
-					f.inRender = false
-				}
-				break
-			}
-			f.pending = f.pending[end+len(renderEnd):]
-			f.inRender = false
-			continue
-		}
-
-		// Not inside markup: find earliest start marker.
-		idxTool := strings.Index(lower, toolStart)
-		idxRender := strings.Index(lower, renderStart)
-		idx := -1
-		kind := ""
-		if idxTool >= 0 {
-			idx = idxTool
-			kind = "tool"
-		}
-		if idxRender >= 0 && (idx < 0 || idxRender < idx) {
-			idx = idxRender
-			kind = "render"
-		}
-
-		if idx < 0 {
-			// No marker found; emit everything except a tail to catch split markers.
-			keep := 256
-			if len(f.pending) <= keep {
-				break
-			}
-			safe := validUTF8Prefix(f.pending[:len(f.pending)-keep])
-			// Avoid leaking partial '<grok:render' fragments; keep more if suffix looks like a start.
-			lsafe := strings.ToLower(safe)
-			if strings.HasSuffix(lsafe, "<") || strings.HasSuffix(lsafe, "<g") || strings.HasSuffix(lsafe, "<gr") || strings.HasSuffix(lsafe, "<gro") || strings.HasSuffix(lsafe, "<grok") || strings.HasSuffix(lsafe, "<grok:") {
-				// move one byte from safe back to pending by shrinking safe until it no longer ends with '<...'
-				for len(safe) > 0 {
-					safe = safe[:len(safe)-1]
-					lsafe = strings.ToLower(safe)
-					if !(strings.HasSuffix(lsafe, "<") || strings.HasSuffix(lsafe, "<g") || strings.HasSuffix(lsafe, "<gr") || strings.HasSuffix(lsafe, "<gro") || strings.HasSuffix(lsafe, "<grok") || strings.HasSuffix(lsafe, "<grok:")) {
-						break
-					}
-				}
-				// Reattach removed bytes to pending
-				f.pending = safe + f.pending[len(safe):]
-			}
-			cleaned := stripLeadingAngleNoise(sanitizeText(stripToolAndRenderMarkup(safe)))
-			if cleaned != "" {
-				out.WriteString(cleaned)
-			}
-			f.pending = f.pending[len(f.pending)-keep:]
-			break
-		}
-
-		// Emit prefix before the marker.
-		prefix := validUTF8Prefix(f.pending[:idx])
-		cleaned := stripLeadingAngleNoise(sanitizeText(stripToolAndRenderMarkup(prefix)))
-		if cleaned != "" {
-			out.WriteString(cleaned)
-		}
-		f.pending = f.pending[idx:]
-		// Enter suppression state.
-		if kind == "tool" {
-			f.inTool = true
-		} else {
-			f.inRender = true
-		}
-		// Loop to consume until end marker appears.
-	}
-
-	return out.String()
-}
+// NOTE: streamMarkupFilter.feed is implemented earlier in this file.
 
 func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec, token string, publicBase string, hasAttachments bool, userPrompt string, body io.Reader) {
 	w.Header().Set("Content-Type", "text/event-stream")
