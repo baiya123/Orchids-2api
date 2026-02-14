@@ -511,6 +511,23 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			imgs, errImg := h.callLocalImagesGenerations(ctx2, text, n)
 			_ = errImg
 			imgs = normalizeImageURLs(imgs, n)
+			if publicBase != "" {
+				for i, u := range imgs {
+					u = strings.TrimSpace(u)
+					if u == "" {
+						continue
+					}
+					// Rewrite loopback URLs returned by local call to the public base.
+					if strings.HasPrefix(u, "http://127.0.0.1:") || strings.HasPrefix(u, "http://localhost:") {
+						if idx := strings.Index(u, "/grok/"); idx >= 0 {
+							u = publicBase + u[idx:]
+						}
+					} else if strings.HasPrefix(u, "/") {
+						u = publicBase + u
+					}
+					imgs[i] = u
+				}
+			}
 			if len(imgs) > 0 {
 				h.replyChatImagesOnly(w, req.Model, imgs, req.Stream)
 				return
