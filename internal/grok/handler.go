@@ -508,7 +508,8 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			n := inferRequestedImageCount(text, 2)
 			ctx2, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 			defer cancel()
-			imgs, errImg := h.callLocalImagesGenerations(ctx2, text, n)
+			imgPrompt := buildImagePromptFromUser(text, n)
+			imgs, errImg := h.callLocalImagesGenerations(ctx2, imgPrompt, n)
 			_ = errImg
 			imgs = normalizeImageURLs(imgs, n)
 			if publicBase != "" {
@@ -1622,7 +1623,9 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		maxAttempts = 4
 	}
 	deadline := time.Now().Add(60 * time.Second)
-	variants := []string{"安福路白天街拍", "外滩夜景街拍", "南京路人潮街拍", "法租界梧桐街拍", "弄堂市井街拍", "陆家嘴现代街拍", "地铁口街拍", "雨天街拍"}
+	// Variants should not overwrite the subject (e.g. turning a "美女照片" request into street scenery).
+	// Keep them as composition/lighting/camera hints only.
+	variants := []string{"人像写真", "半身近景", "全身站姿", "室内棚拍", "自然光", "浅景深", "电影感光影", "干净背景"}
 	for i := 0; i < maxAttempts; i++ {
 		attempts++
 		cur := normalizeImageURLs(urls, 0)
