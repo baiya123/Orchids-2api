@@ -90,40 +90,56 @@ func isLikelyImageAssetPath(p string) bool {
 
 func stripLeadingAngleNoise(s string) string {
 	// Remove obvious leftover fragments like "<<<" produced by suppressed markup.
-	// More robust than line-start only: strip runs of '<' (len>=3) that appear at
-	// the beginning of a line OR after whitespace.
+	// In practice these can appear as:
+	//   - contiguous runs: <<<<
+	//   - separated by whitespace / zero-width chars: < <  or <\u200b<
+	// We keep a single '<' intact to avoid damaging legitimate content.
 	if s == "" {
 		return s
 	}
-	var b strings.Builder
-	b.Grow(len(s))
 
-	// isWS removed (no longer needed)
+	r := []rune(s)
+	out := make([]rune, 0, len(r))
 
-	for i := 0; i < len(s); {
-		if s[i] == '<' {
-			// count run
+	isSep := func(ch rune) bool {
+		switch ch {
+		case ' ', '\t', '\r', '\n', '\u200b', '\u200c', '\u200d', '\ufeff':
+			return true
+		default:
+			return false
+		}
+	}
+
+	for i := 0; i < len(r); {
+		if r[i] == '<' {
 			j := i
-			for j < len(s) && s[j] == '<' {
-				j++
+			count := 0
+			for j < len(r) {
+				if r[j] == '<' {
+					count++
+					j++
+					continue
+				}
+				if isSep(r[j]) {
+					j++
+					continue
+				}
+				break
 			}
-			run := j - i
-			// Treat any run of '<<' as noise. These fragments repeatedly leak from suppressed markup.
-			// We keep single '<' intact to avoid damaging legitimate content.
-			if run >= 2 {
-				// skip all '<' in this run
+			if count >= 2 {
+				// Skip the whole noisy segment, plus trailing spaces/tabs.
 				i = j
-				// also skip immediate whitespace after it
-				for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+				for i < len(r) && (r[i] == ' ' || r[i] == '\t') {
 					i++
 				}
 				continue
 			}
 		}
-		b.WriteByte(s[i])
+		out = append(out, r[i])
 		i++
 	}
-	return b.String()
+
+	return string(out)
 }
 
 const maxEditImageBytes = 50 * 1024 * 1024
