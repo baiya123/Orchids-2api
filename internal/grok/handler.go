@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,77 @@ func extractImageURLsFromText(s string) []string {
 		return nil
 	}
 	return uniqueStrings(m)
+}
+
+type scoredURL struct {
+	u     string
+	score int
+}
+
+func extractPreferredImageURLsFromJSONText(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || !strings.HasPrefix(s, "{") {
+		return nil
+	}
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return nil
+	}
+	var out []scoredURL
+	var walk func(x interface{}, keyHint string)
+	walk = func(x interface{}, keyHint string) {
+		switch t := x.(type) {
+		case map[string]interface{}:
+			for k, vv := range t {
+				walk(vv, k)
+			}
+		case []interface{}:
+			for _, vv := range t {
+				walk(vv, keyHint)
+			}
+		case string:
+			u := strings.TrimSpace(t)
+			if !isLikelyImageURL(u) {
+				return
+			}
+			lk := strings.ToLower(strings.TrimSpace(keyHint))
+			score := 50
+			if strings.Contains(lk, "original") {
+				score = 100
+			} else if strings.Contains(lk, "thumbnail") || strings.Contains(lk, "thumb") {
+				score = 10
+			} else if strings.Contains(lk, "link") {
+				score = 5
+			}
+			out = append(out, scoredURL{u: u, score: score})
+		}
+	}
+	walk(v, "")
+	if len(out) == 0 {
+		return nil
+	}
+	// Dedup keeping best score.
+	best := map[string]int{}
+	for _, it := range out {
+		if cur, ok := best[it.u]; !ok || it.score > cur {
+			best[it.u] = it.score
+		}
+	}
+	items := make([]scoredURL, 0, len(best))
+	for u, sc := range best {
+		items = append(items, scoredURL{u: u, score: sc})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].score == items[j].score {
+			return items[i].u < items[j].u
+		}
+		return items[i].score > items[j].score
+	})
+	res := make([]string, 0, len(items))
+	for _, it := range items {
+		res = append(res, it.u)
+	}
+	return res
 }
 
 func isLikelyImageURL(u string) bool {
@@ -901,7 +973,11 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 							}
 							// Some image_card payloads appear as JSON strings in debugAsset.
 							if strings.HasPrefix(p, "{") {
-								for _, u := range extractImageURLsFromText(p) {
+								preferred := extractPreferredImageURLsFromJSONText(p)
+								if len(preferred) == 0 {
+									preferred = extractImageURLsFromText(p)
+								}
+								for _, u := range preferred {
 									if isLikelyImageURL(u) {
 										urls = append(urls, u)
 										if len(urls) >= n {
