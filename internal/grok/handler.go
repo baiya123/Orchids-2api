@@ -41,6 +41,26 @@ func formatImageMarkdown(u string) string {
 	return "\n\n![](" + u + ")\n\n"
 }
 
+func isLikelyImageAssetPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	// Reject JSON blobs or echoed prompts.
+	if strings.HasPrefix(p, "{") || strings.Contains(p, "Image Generation:") {
+		return false
+	}
+	// Reject anything with whitespace (asset paths/urls shouldn't contain spaces/newlines).
+	if strings.ContainsAny(p, " \t\r\n") {
+		return false
+	}
+	lp := strings.ToLower(p)
+	if strings.HasSuffix(lp, ".jpg") || strings.HasSuffix(lp, ".jpeg") || strings.HasSuffix(lp, ".png") || strings.HasSuffix(lp, ".webp") || strings.HasSuffix(lp, ".gif") {
+		return true
+	}
+	return false
+}
+
 func stripLeadingAngleNoise(s string) string {
 	// Remove obvious leftover fragments like "<<<" produced by suppressed markup.
 	// More robust than line-start only: strip runs of '<' (len>=3) that appear at
@@ -787,18 +807,22 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				if len(urls) > n {
 					urls = urls[:n]
 				}
-				// If imagine didn't return http urls, we often still get assets.grok.com paths.
+				// If imagine didn't return http urls, we sometimes still get assets.grok.com paths.
+				// Only accept strings that look like actual image asset paths; otherwise we risk
+				// turning echoed prompts / JSON cards into bogus URLs.
 				if len(urls) == 0 {
 					if len(debugAsset) > 0 {
 						for _, p := range debugAsset {
 							p = strings.TrimSpace(p)
-							if p == "" || strings.Contains(p, "grok-3") {
+							if p == "" || strings.Contains(p, "grok-3") || strings.Contains(p, "grok-4") {
 								continue
 							}
 							if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
 								urls = append(urls, p)
-							} else {
+							} else if isLikelyImageAssetPath(p) {
 								urls = append(urls, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
+							} else {
+								continue
 							}
 							if len(urls) >= n {
 								break
@@ -973,13 +997,15 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 					if len(debugAsset) > 0 {
 						for _, p := range debugAsset {
 							p = strings.TrimSpace(p)
-							if p == "" || strings.Contains(p, "grok-3") {
+							if p == "" || strings.Contains(p, "grok-3") || strings.Contains(p, "grok-4") {
 								continue
 							}
 							if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
 								urls = append(urls, p)
-							} else {
+							} else if isLikelyImageAssetPath(p) {
 								urls = append(urls, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
+							} else {
+								continue
 							}
 							if len(urls) >= n {
 								break
