@@ -497,6 +497,26 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Scheme 1 (hard): if the user asks for images, prefer /images/generations and return images directly.
+	// This avoids Grok chat's frequent 502s and the imagine flow that reports imageAttachmentCount but returns no URLs.
+	publicBase := detectPublicBaseURL(r)
+	if len(attachments) == 0 {
+		ld := strings.ToLower(text)
+		neg := strings.Contains(text, "不要图片") || strings.Contains(text, "不需要图片") || strings.Contains(text, "别发图片") || strings.Contains(text, "不要照片") || strings.Contains(text, "不需要照片") || strings.Contains(text, "别发照片")
+		looksLikeImageReq := !neg && strings.TrimSpace(text) != "" && (strings.Contains(text, "图片") || strings.Contains(text, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture"))
+		if looksLikeImageReq {
+			n := inferRequestedImageCount(text, 2)
+			ctx2, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+			defer cancel()
+			imgs, _ := h.generateViaImagesGenerations(ctx2, text, n, "url", publicBase)
+			imgs = normalizeImageURLs(imgs, n)
+			if len(imgs) > 0 {
+				h.replyChatImagesOnly(w, req.Model, imgs, req.Stream)
+				return
+			}
+		}
+	}
+
 	// Retry once on transient account failures (e.g. 403/429) by switching account.
 	var (
 		acc   *store.Account
@@ -546,7 +566,6 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	defer resp.Body.Close()
 	h.syncGrokQuota(acc, resp.Header)
 
-	publicBase := detectPublicBaseURL(r)
 	hasAttachments := len(attachments) > 0
 	if req.Stream {
 		h.streamChat(w, req.Model, spec, token, publicBase, hasAttachments, text, resp.Body)
