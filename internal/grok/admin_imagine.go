@@ -171,7 +171,7 @@ func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio 
 	release := h.trackAccount(acc)
 	defer release()
 
-	payload := h.client.chatPayload(spec, "Image Generation: "+strings.TrimSpace(prompt), true)
+	payload := h.client.chatPayload(spec, "Image Generation: "+strings.TrimSpace(prompt), true, 2)
 	ensureImageAspectRatio(payload, aspectRatio)
 
 	callsNeeded := (n + 1) / 2

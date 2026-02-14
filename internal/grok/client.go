@@ -119,7 +119,14 @@ func (c *Client) headers(token string) http.Header {
 	return h
 }
 
-func (c *Client) chatPayload(spec ModelSpec, text string, noMemory bool) map[string]interface{} {
+func (c *Client) chatPayload(spec ModelSpec, text string, noMemory bool, imageCount int) map[string]interface{} {
+	cnt := imageCount
+	if cnt <= 0 {
+		cnt = 2
+	}
+	if cnt > 4 {
+		cnt = 4
+	}
 	payload := map[string]interface{}{
 		"temporary":             true,
 		"modelName":             spec.UpstreamModel,
@@ -130,7 +137,7 @@ func (c *Client) chatPayload(spec ModelSpec, text string, noMemory bool) map[str
 		"enableImageGeneration": true,
 		"returnImageBytes":      false,
 		"enableImageStreaming":  true,
-		"imageGenerationCount":  2,
+		"imageGenerationCount":  cnt,
 		"forceConcise":          false,
 		"toolOverrides":         map[string]interface{}{},
 		"enableSideBySide":      true,
@@ -266,7 +273,7 @@ func (c *Client) VerifyToken(ctx context.Context, token, modelID string) (*RateL
 			return nil, fmt.Errorf("grok default model not available")
 		}
 	}
-	payload := c.chatPayload(spec, "ping", true)
+	payload := c.chatPayload(spec, "ping", true, 0)
 	resp, chatErr := c.doChat(ctx, token, payload)
 	if chatErr != nil {
 		return nil, chatErr

@@ -537,7 +537,7 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) buildChatPayload(ctx context.Context, token string, spec ModelSpec, text string, fileAttachments []string, videoCfg *VideoConfig) (map[string]interface{}, error) {
-	payload := h.client.chatPayload(spec, text, true)
+	payload := h.client.chatPayload(spec, text, true, 0)
 	if len(fileAttachments) > 0 {
 		payload["fileAttachments"] = fileAttachments
 	}
@@ -1002,7 +1002,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				if n > 4 {
 					n = 4
 				}
-				payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true)
+				payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true, n)
 				resp2, err2 := h.client.doChat(context.Background(), token, payload)
 				if err2 != nil {
 					continue
@@ -1171,7 +1171,7 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 				if n > 4 {
 					n = 4 // keep it small; the original tool can request many
 				}
-				payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true)
+				payload := h.client.chatPayload(imSpec, "Image Generation: "+a.ImageDescription, true, n)
 				resp2, err2 := h.client.doChat(context.Background(), token, payload)
 				if err2 != nil {
 					continue
@@ -1521,7 +1521,7 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	release := h.trackAccount(acc)
 	defer release()
 
-	onePayload := h.client.chatPayload(spec, "Image Generation: "+req.Prompt, true)
+	onePayload := h.client.chatPayload(spec, "Image Generation: "+req.Prompt, true, req.N)
 	if req.Stream {
 		resp, err := h.client.doChat(r.Context(), token, onePayload)
 		if err != nil {
