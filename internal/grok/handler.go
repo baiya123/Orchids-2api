@@ -1461,6 +1461,8 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	var urls []string
 	var debugHTTP []string
 	var debugAsset []string
+	attempts := 0
+	stoppedReason := ""
 
 	// Grok upstream may return only 2 images per call and may repeat.
 	// To reach N, request 1 image per call and vary the prompt (scene/person/composition) to reduce repeats.
@@ -1471,12 +1473,15 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	deadline := time.Now().Add(60 * time.Second)
 	variants := []string{"安福路白天街拍", "外滩夜景街拍", "南京路人潮街拍", "法租界梧桐街拍", "弄堂市井街拍", "陆家嘴现代街拍", "地铁口街拍", "雨天街拍"}
 	for i := 0; i < maxAttempts; i++ {
-		if time.Now().After(deadline) {
-			break
-		}
+		attempts++
 		cur := normalizeImageURLs(urls, 0)
 		if len(cur) >= req.N {
 			urls = cur
+			stoppedReason = "enough"
+			break
+		}
+		if time.Now().After(deadline) {
+			stoppedReason = "deadline"
 			break
 		}
 		v := variants[i%len(variants)]
@@ -1505,7 +1510,16 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 			http.Error(w, "stream parse error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		urls = normalizeImageURLs(urls, 0)
+		next := normalizeImageURLs(urls, 0)
+		if len(next) <= len(cur) {
+			urls = next
+			stoppedReason = "no-new-urls"
+			break
+		}
+		urls = next
+	}
+	if stoppedReason == "" {
+		stoppedReason = "max-attempts"
 	}
 
 	urls = normalizeImageURLs(urls, req.N)
@@ -1537,6 +1551,7 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		"data":    data,
 		"usage":   imageUsagePayload(),
 	}
+	maybeAddImageDebug(r, out, req.N, len(urls), attempts, stoppedReason)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
