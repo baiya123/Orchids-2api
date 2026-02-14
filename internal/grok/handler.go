@@ -817,26 +817,35 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		sentAny = true
 	}
 
-	emitImageURL := func(u string) {
-		u = strings.TrimSpace(u)
-		if u == "" {
+	emitImageURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
 			return
 		}
-		if strings.Contains(u, "-part-0/") {
-			full := strings.ReplaceAll(u, "-part-0/", "/")
+		// Track preview vs full variants on the raw upstream URL.
+		if strings.Contains(raw, "-part-0/") {
+			full := strings.ReplaceAll(raw, "-part-0/", "/")
 			if seenFull[full] {
 				return
 			}
-			pendingPart[full] = u
+			pendingPart[full] = raw
 			return
 		}
-		seenFull[u] = true
-		if emitted[u] {
+		seenFull[raw] = true
+		if emitted[raw] {
 			return
 		}
-		if md := formatImageMarkdown(u); md != "" {
+
+		val, errV := h.imageOutputValue(context.Background(), token, raw, "url")
+		if errV != nil || strings.TrimSpace(val) == "" {
+			val = raw
+		}
+		if publicBase != "" && strings.HasPrefix(val, "/") {
+			val = publicBase + val
+		}
+		if md := formatImageMarkdown(val); md != "" {
 			emitChunk(map[string]interface{}{"content": md}, nil)
-			emitted[u] = true
+			emitted[raw] = true
 		}
 	}
 
