@@ -113,6 +113,7 @@ func appendImageCandidates(urls []string, debugHTTP []string, debugAsset []strin
 	if len(urls) > 0 {
 		return urls
 	}
+
 	// 1) Prefer direct image URLs from observed http strings.
 	for _, u := range debugHTTP {
 		if isLikelyImageURL(u) {
@@ -123,12 +124,15 @@ func appendImageCandidates(urls []string, debugHTTP []string, debugAsset []strin
 		}
 	}
 	urls = normalizeImageURLs(urls, n)
-	if len(urls) > 0 {
+	if len(urls) >= n {
 		return urls
 	}
 
-	// 2) Parse JSON card strings from debugAsset to extract preferred image URLs.
+	// 2) Parse JSON card strings or asset-like strings from debugAsset and collect up to n.
 	for _, p := range debugAsset {
+		if len(urls) >= n {
+			break
+		}
 		p = strings.TrimSpace(p)
 		if p == "" || strings.Contains(p, "grok-3") || strings.Contains(p, "grok-4") {
 			continue
@@ -147,22 +151,19 @@ func appendImageCandidates(urls []string, debugHTTP []string, debugAsset []strin
 				}
 			}
 			urls = normalizeImageURLs(urls, n)
-			if len(urls) > 0 {
-				return urls
-			}
 			continue
 		}
+
 		if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
-			urls = append(urls, p)
+			if isLikelyImageURL(p) {
+				urls = append(urls, p)
+			}
 		} else if isLikelyImageAssetPath(p) {
 			urls = append(urls, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
 		}
 		urls = normalizeImageURLs(urls, n)
-		if len(urls) > 0 {
-			return urls
-		}
 	}
-	return urls
+	return normalizeImageURLs(urls, n)
 }
 
 func extractPreferredImageURLsFromJSONText(s string) []string {
