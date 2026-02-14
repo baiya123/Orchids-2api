@@ -625,7 +625,10 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				}
 			} else {
 				if cleaned := mf.feed(tokenDelta); cleaned != "" {
-					emitChunk(map[string]interface{}{"content": cleaned}, nil)
+					cleaned = stripLeadingAngleNoise(cleaned)
+					if cleaned != "" {
+						emitChunk(map[string]interface{}{"content": cleaned}, nil)
+					}
 				}
 			}
 		}
@@ -642,7 +645,10 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 						}
 					} else {
 						if cleaned := mf.feed(msg); cleaned != "" {
-							emitChunk(map[string]interface{}{"content": cleaned}, nil)
+							cleaned = stripLeadingAngleNoise(cleaned)
+							if cleaned != "" {
+								emitChunk(map[string]interface{}{"content": cleaned}, nil)
+							}
 						}
 					}
 				}
@@ -706,13 +712,18 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 	rawText := rawAll.String()
 	args := parseSearchImagesArgsFromText(rawText)
 	if !hasAttachments {
-		if len(args) == 0 && strings.Contains(rawText, "search_images") {
-			desc := strings.TrimSpace(userPrompt)
-			// Only do the aggressive fallback (A) when the user prompt actually looks like an image request.
-			ld := strings.ToLower(desc)
-			if desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture")) {
-				args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
-			}
+		desc := strings.TrimSpace(userPrompt)
+		ld := strings.ToLower(desc)
+		looksLikeImageReq := desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture"))
+
+		// 1) If tool args exist, use them.
+		// 2) If we see search_images markup but args missing, fallback to user prompt.
+		if len(args) == 0 && strings.Contains(rawText, "search_images") && looksLikeImageReq {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
+		}
+		// 3) If we see grok render image cards but no URLs, also fallback to user prompt.
+		if len(args) == 0 && strings.Contains(rawText, "grok:render") && looksLikeImageReq {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
 		}
 	}
 	if len(args) > 0 {
@@ -877,12 +888,14 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 	// This makes OpenAI-compatible clients (e.g. Cherry Studio) able to display images.
 	args := parseSearchImagesArgsFromText(finalContent)
 	if !hasAttachments {
-		if len(args) == 0 && strings.Contains(finalContent, "search_images") {
-			desc := strings.TrimSpace(userPrompt)
-			ld := strings.ToLower(desc)
-			if desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture")) {
-				args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
-			}
+		desc := strings.TrimSpace(userPrompt)
+		ld := strings.ToLower(desc)
+		looksLikeImageReq := desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture"))
+		if len(args) == 0 && strings.Contains(finalContent, "search_images") && looksLikeImageReq {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
+		}
+		if len(args) == 0 && strings.Contains(finalContent, "grok:render") && looksLikeImageReq {
+			args = []SearchImagesArgs{{ImageDescription: desc, NumberOfImages: 4}}
 		}
 	}
 	if len(args) > 0 {
