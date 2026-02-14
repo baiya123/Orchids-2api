@@ -52,9 +52,9 @@ func stripLeadingAngleNoise(s string) string {
 				j++
 			}
 			run := j - i
-			// Treat any run of '<<<' as noise. This sequence is not valid in Grok markup and
-			// repeatedly leaks as a fragment; stripping it anywhere is safe and improves UX.
-			if run >= 3 {
+			// Treat any run of '<<' as noise. These fragments repeatedly leak from suppressed markup.
+			// We keep single '<' intact to avoid damaging legitimate content.
+			if run >= 2 {
 				// skip all '<' in this run
 				i = j
 				// also skip immediate whitespace after it
