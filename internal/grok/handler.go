@@ -1045,7 +1045,10 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		looksLikeImageReq := !neg && desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture"))
 		if looksLikeImageReq && len(emitted) == 0 {
 			n := inferRequestedImageCount(desc, 2)
-			imgs := h.generateImagesFallback(context.Background(), token, desc, n)
+			emitChunk(map[string]interface{}{"content": "\n[正在生成图片...]\n"}, nil)
+			ctx2, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			imgs := h.generateImagesFallback(ctx2, token, desc, n)
 			if len(imgs) > 0 {
 				var out strings.Builder
 				out.WriteString("\n\n")
@@ -1149,7 +1152,9 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 			// If Grok didn't provide links, generate.
 			n := inferRequestedImageCount(desc, 2)
 			if n > 0 && len(imgs) < n {
-				gen := h.generateImagesFallback(context.Background(), token, desc, n)
+				ctx2, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+				defer cancel()
+				gen := h.generateImagesFallback(ctx2, token, desc, n)
 				if len(gen) > 0 {
 					for _, u := range gen {
 						val, errV := h.imageOutputValue(context.Background(), token, u, "url")
