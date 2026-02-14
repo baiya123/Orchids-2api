@@ -1045,7 +1045,7 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 		looksLikeImageReq := !neg && desc != "" && (strings.Contains(desc, "图片") || strings.Contains(desc, "照片") || strings.Contains(ld, "image") || strings.Contains(ld, "picture"))
 		if looksLikeImageReq && len(emitted) == 0 {
 			n := inferRequestedImageCount(desc, 2)
-			emitChunk(map[string]interface{}{"content": "\n[正在生成图片...]\n"}, nil)
+			// (silenced progress message)
 			ctx2, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			imgs, reason := h.generateImagesFallback(ctx2, token, desc, n)
@@ -1066,15 +1066,8 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 				}
 				emitChunk(map[string]interface{}{"content": out.String()}, nil)
 			} else {
-				// No images generated.
-				switch reason {
-				case "rate-limited":
-					emitChunk(map[string]interface{}{"content": "\n[上游图片生成被限流(429)。请改用 /grok/v1/images/generations 生成图片]\n"}, nil)
-				case "timeout":
-					emitChunk(map[string]interface{}{"content": "\n[图片生成超时。请改用 /grok/v1/images/generations 生成图片]\n"}, nil)
-				default:
-					emitChunk(map[string]interface{}{"content": "\n[图片生成失败。请改用 /grok/v1/images/generations 生成图片]\n"}, nil)
-				}
+				// (silenced fallback failure message)
+				_ = reason
 			}
 		}
 	}
@@ -1177,14 +1170,8 @@ func (h *Handler) collectChat(w http.ResponseWriter, model string, spec ModelSpe
 						finalContent += formatImageMarkdown(val)
 					}
 				} else {
-					switch reason {
-					case "rate-limited":
-						finalContent += "\n\n[上游图片生成被限流(429)。请改用 /grok/v1/images/generations 生成图片]\n"
-					case "timeout":
-						finalContent += "\n\n[图片生成超时。请改用 /grok/v1/images/generations 生成图片]\n"
-					default:
-						finalContent += "\n\n[图片生成失败。请改用 /grok/v1/images/generations 生成图片]\n"
-					}
+					// (silenced fallback failure message)
+					_ = reason
 				}
 			}
 		}
