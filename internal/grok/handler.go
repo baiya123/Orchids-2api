@@ -949,8 +949,25 @@ func (h *Handler) streamChat(w http.ResponseWriter, model string, spec ModelSpec
 			}
 		}
 		// Broader fallback: sometimes URLs live outside modelResponse.
+		for _, u := range extractImageURLs(resp) {
+			emitImageURL(u)
+		}
 		for _, u := range extractRenderableImageLinks(resp) {
 			emitImageURL(u)
+		}
+		for _, p := range collectAssetLikeStrings(resp, 120) {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if isLikelyImageURL(p) {
+				emitImageURL(p)
+				continue
+			}
+			if isLikelyImageAssetPath(p) {
+				emitImageURL("https://assets.grok.com/" + strings.TrimPrefix(p, "/"))
+				continue
+			}
 		}
 		if spec.IsVideo {
 			if progress, videoURL, _, ok := extractVideoProgress(resp); ok {
