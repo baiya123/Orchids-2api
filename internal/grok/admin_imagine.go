@@ -164,12 +164,11 @@ func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio 
 		n = 1
 	}
 
-	acc, token, err := h.selectAccount(ctx)
+	sess, err := h.openChatAccountSession(ctx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("no available grok token: %w", err)
 	}
-	release := h.trackAccount(acc)
-	defer release()
+	defer sess.Close()
 
 	payload := h.client.chatPayload(spec, "Image Generation: "+strings.TrimSpace(prompt), true, 2)
 	ensureImageAspectRatio(payload, aspectRatio)
@@ -182,10 +181,11 @@ func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio 
 	startedAt := time.Now()
 	var urls []string
 	for i := 0; i < callsNeeded; i++ {
-		resp, err := h.client.doChat(ctx, token, payload)
+		resp, err := h.doChatWithAutoSwitch(ctx, sess, payload)
 		if err != nil {
 			return nil, 0, err
 		}
+		h.syncGrokQuota(sess.acc, resp.Header)
 		parseErr := parseUpstreamLines(resp.Body, func(line map[string]interface{}) error {
 			if mr, ok := line["modelResponse"].(map[string]interface{}); ok {
 				urls = append(urls, extractImageURLs(mr)...)
@@ -198,17 +198,14 @@ func (h *Handler) generateImagineBatch(ctx context.Context, prompt, aspectRatio 
 		}
 	}
 
-	urls = uniqueStrings(urls)
+	urls = normalizeGeneratedImageURLs(urls, n)
 	if len(urls) == 0 {
 		return nil, 0, fmt.Errorf("no image generated")
-	}
-	if len(urls) > n {
-		urls = urls[:n]
 	}
 
 	images := make([]imagineImage, 0, len(urls))
 	for _, u := range urls {
-		data, mimeType, err := h.client.downloadAsset(ctx, token, u)
+		data, mimeType, err := h.client.downloadAsset(ctx, sess.token, u)
 		if err != nil {
 			slog.Warn("imagine image download failed", "url", u, "error", err)
 			continue

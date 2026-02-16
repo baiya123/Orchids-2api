@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -111,47 +112,119 @@ func preferFullOverPart(urls []string) []string {
 }
 
 func normalizeImageURLs(urls []string, n int) []string {
-	urls = uniqueStrings(urls)
-	filtered := make([]string, 0, len(urls))
-	for _, u := range urls {
-		if isLikelyImageURL(u) {
-			filtered = append(filtered, u)
-		}
-	}
-	urls = preferFullOverPart(filtered)
+	urls = selectImageURLs(urls, false)
 	if n > 0 && len(urls) > n {
 		urls = urls[:n]
 	}
 	return urls
 }
 
+// normalizeGeneratedImageURLs is stricter than normalizeImageURLs:
+// when Grok/local file URLs exist, they are preferred over arbitrary external links.
+func normalizeGeneratedImageURLs(urls []string, n int) []string {
+	urls = selectImageURLs(urls, true)
+	if n > 0 && len(urls) > n {
+		urls = urls[:n]
+	}
+	return urls
+}
+
+func selectImageURLs(urls []string, preferGrok bool) []string {
+	type scored struct {
+		u     string
+		score int
+	}
+	input := uniqueStrings(urls)
+	all := make([]scored, 0, len(input))
+	preferred := make([]scored, 0, len(input))
+	for _, u := range input {
+		sc := imageURLScore(u)
+		if sc < 0 {
+			continue
+		}
+		item := scored{u: strings.TrimSpace(u), score: sc}
+		all = append(all, item)
+		if sc >= 700 {
+			preferred = append(preferred, item)
+		}
+	}
+	candidates := all
+	if preferGrok && len(preferred) > 0 {
+		candidates = preferred
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			return candidates[i].u < candidates[j].u
+		}
+		return candidates[i].score > candidates[j].score
+	})
+	out := make([]string, 0, len(candidates))
+	for _, it := range candidates {
+		out = append(out, it.u)
+	}
+	return preferFullOverPart(out)
+}
+
+func imageURLScore(raw string) int {
+	u := strings.TrimSpace(raw)
+	if !isLikelyImageURL(u) {
+		return -1
+	}
+	lu := strings.ToLower(u)
+	if strings.HasPrefix(lu, "/grok/v1/files/image/") {
+		return 1000
+	}
+
+	score := 100
+	if strings.HasPrefix(lu, "http://127.0.0.1:") || strings.HasPrefix(lu, "http://localhost:") {
+		if strings.Contains(lu, "/grok/v1/files/image/") {
+			score = 980
+		}
+	}
+	if parsed, err := url.Parse(u); err == nil {
+		host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+		switch {
+		case host == "assets.grok.com":
+			score = 900
+		case host == "grok.com" || strings.HasSuffix(host, ".grok.com"):
+			score = 700
+		case strings.Contains(host, "encrypted-tbn"):
+			score = 10
+		}
+		path := strings.ToLower(parsed.EscapedPath())
+		if strings.Contains(path, "/generated/") {
+			score += 30
+		}
+		if strings.Contains(path, "/image.") {
+			score += 10
+		}
+		if strings.Contains(path, "-part-0/") {
+			score -= 120
+		}
+		query := strings.ToLower(parsed.RawQuery)
+		if strings.Contains(query, "thumbnail") || strings.Contains(query, "thumb") {
+			score -= 30
+		}
+	}
+	return score
+}
+
 func appendImageCandidates(urls []string, debugHTTP []string, debugAsset []string, n int) []string {
 	if n <= 0 {
 		n = 4
 	}
-	if len(urls) > 0 {
-		return urls
-	}
+	candidates := make([]string, 0, len(urls)+len(debugHTTP)+len(debugAsset))
+	candidates = append(candidates, urls...)
 
 	// 1) Prefer direct image URLs from observed http strings.
 	for _, u := range debugHTTP {
 		if isLikelyImageURL(u) {
-			urls = append(urls, u)
-			if len(urls) >= n {
-				break
-			}
+			candidates = append(candidates, u)
 		}
-	}
-	urls = normalizeImageURLs(urls, n)
-	if len(urls) >= n {
-		return urls
 	}
 
 	// 2) Parse JSON card strings or asset-like strings from debugAsset and collect up to n.
 	for _, p := range debugAsset {
-		if len(urls) >= n {
-			break
-		}
 		p = strings.TrimSpace(p)
 		if p == "" || strings.Contains(p, "grok-3") || strings.Contains(p, "grok-4") {
 			continue
@@ -163,26 +236,21 @@ func appendImageCandidates(urls []string, debugHTTP []string, debugAsset []strin
 			}
 			for _, u := range preferred {
 				if isLikelyImageURL(u) {
-					urls = append(urls, u)
-					if len(urls) >= n {
-						break
-					}
+					candidates = append(candidates, u)
 				}
 			}
-			urls = normalizeImageURLs(urls, n)
 			continue
 		}
 
 		if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
 			if isLikelyImageURL(p) {
-				urls = append(urls, p)
+				candidates = append(candidates, p)
 			}
 		} else if isLikelyImageAssetPath(p) {
-			urls = append(urls, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
+			candidates = append(candidates, "https://assets.grok.com/"+strings.TrimPrefix(p, "/"))
 		}
-		urls = normalizeImageURLs(urls, n)
 	}
-	return normalizeImageURLs(urls, n)
+	return normalizeGeneratedImageURLs(candidates, n)
 }
 
 func extractPreferredImageURLsFromJSONText(s string) []string {
@@ -313,6 +381,17 @@ type Handler struct {
 	client *Client
 }
 
+type chatAccountSession struct {
+	acc     *store.Account
+	token   string
+	release func()
+}
+
+type imageEditUploadInput struct {
+	mime string
+	data []byte
+}
+
 func NewHandler(cfg *config.Config, lb *loadbalancer.LoadBalancer) *Handler {
 	return &Handler{
 		cfg:    cfg,
@@ -384,6 +463,106 @@ func (h *Handler) markAccountStatus(ctx context.Context, acc *store.Account, err
 		return
 	}
 	h.lb.MarkAccountStatus(ctx, acc, status)
+}
+
+func (h *Handler) openChatAccountSession(ctx context.Context) (*chatAccountSession, error) {
+	acc, token, err := h.selectAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &chatAccountSession{
+		acc:     acc,
+		token:   token,
+		release: h.trackAccount(acc),
+	}, nil
+}
+
+func (s *chatAccountSession) Close() {
+	if s == nil || s.release == nil {
+		return
+	}
+	s.release()
+	s.release = nil
+}
+
+// doChatWithAutoSwitch runs one chat request and switches account once on 403/429.
+func (h *Handler) doChatWithAutoSwitch(ctx context.Context, sess *chatAccountSession, payload map[string]interface{}) (*http.Response, error) {
+	if sess == nil || strings.TrimSpace(sess.token) == "" {
+		return nil, fmt.Errorf("empty chat session")
+	}
+	resp, err := h.client.doChat(ctx, sess.token, payload)
+	if err == nil {
+		return resp, nil
+	}
+	status := classifyAccountStatusFromError(err.Error())
+	h.markAccountStatus(ctx, sess.acc, err)
+	if status != "403" && status != "429" {
+		return nil, err
+	}
+
+	sess.Close()
+	next, err2 := h.openChatAccountSession(ctx)
+	if err2 != nil {
+		return nil, err
+	}
+	sess.acc = next.acc
+	sess.token = next.token
+	sess.release = next.release
+
+	resp2, err3 := h.client.doChat(ctx, sess.token, payload)
+	if err3 == nil {
+		return resp2, nil
+	}
+	h.markAccountStatus(ctx, sess.acc, err3)
+	return nil, err3
+}
+
+// doChatWithAutoSwitchRebuild retries once with a switched account and rebuilds payload for the new token.
+func (h *Handler) doChatWithAutoSwitchRebuild(
+	ctx context.Context,
+	sess *chatAccountSession,
+	payload *map[string]interface{},
+	rebuild func(token string) (map[string]interface{}, error),
+) (*http.Response, error) {
+	if sess == nil || strings.TrimSpace(sess.token) == "" {
+		return nil, fmt.Errorf("empty chat session")
+	}
+	if payload == nil {
+		return nil, fmt.Errorf("empty payload")
+	}
+	resp, err := h.client.doChat(ctx, sess.token, *payload)
+	if err == nil {
+		return resp, nil
+	}
+	status := classifyAccountStatusFromError(err.Error())
+	h.markAccountStatus(ctx, sess.acc, err)
+	if status != "403" && status != "429" {
+		return nil, err
+	}
+
+	sess.Close()
+	next, err2 := h.openChatAccountSession(ctx)
+	if err2 != nil {
+		return nil, err
+	}
+	sess.acc = next.acc
+	sess.token = next.token
+	sess.release = next.release
+
+	if rebuild != nil {
+		newPayload, rbErr := rebuild(sess.token)
+		if rbErr != nil {
+			return nil, rbErr
+		}
+		*payload = newPayload
+	}
+
+	resp2, err3 := h.client.doChat(ctx, sess.token, *payload)
+	if err3 == nil {
+		return resp2, nil
+	}
+	h.markAccountStatus(ctx, sess.acc, err3)
+	return nil, err3
 }
 
 func (h *Handler) syncGrokQuota(acc *store.Account, headers http.Header) {
@@ -515,7 +694,7 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			var imgs []string
 			for attempt := 0; attempt < 3; attempt++ {
 				out, _ := h.callLocalImagesGenerations(ctx2, imgPrompt, n)
-				imgs = normalizeImageURLs(out, n)
+				imgs = normalizeGeneratedImageURLs(out, n)
 				if len(imgs) > 0 {
 					break
 				}
@@ -550,61 +729,42 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Retry once on transient account failures (e.g. 403/429) by switching account.
-	var (
-		acc   *store.Account
-		token string
-		resp  *http.Response
-	)
-	for attempt := 0; attempt < 2; attempt++ {
-		acc, token, err = h.selectAccount(r.Context())
-		if err != nil {
-			http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		release := h.trackAccount(acc)
+	sess, err := h.openChatAccountSession(r.Context())
+	if err != nil {
+		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer sess.Close()
 
+	buildPayload := func(token string) (map[string]interface{}, error) {
 		fileAttachments, upErr := h.uploadAttachmentInputs(r.Context(), token, attachments)
 		if upErr != nil {
-			h.markAccountStatus(r.Context(), acc, upErr)
-			release()
-			http.Error(w, "attachment upload failed: "+upErr.Error(), http.StatusBadGateway)
-			return
+			return nil, fmt.Errorf("attachment upload failed: %w", upErr)
 		}
+		return h.buildChatPayload(r.Context(), token, spec, text, fileAttachments, req.VideoConfig)
+	}
 
-		payload, buildErr := h.buildChatPayload(r.Context(), token, spec, text, fileAttachments, req.VideoConfig)
-		if buildErr != nil {
-			h.markAccountStatus(r.Context(), acc, buildErr)
-			release()
-			http.Error(w, buildErr.Error(), http.StatusBadGateway)
-			return
-		}
+	payload, err := buildPayload(sess.token)
+	if err != nil {
+		h.markAccountStatus(r.Context(), sess.acc, err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 
-		resp, err = h.client.doChat(r.Context(), token, payload)
-		if err != nil {
-			status := classifyAccountStatusFromError(err.Error())
-			h.markAccountStatus(r.Context(), acc, err)
-			release()
-			// Switch account once for 403/429.
-			if attempt == 0 && (status == "403" || status == "429") {
-				continue
-			}
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		// Success
-		defer release()
-		break
+	resp, err := h.doChatWithAutoSwitchRebuild(r.Context(), sess, &payload, buildPayload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
 	defer resp.Body.Close()
-	h.syncGrokQuota(acc, resp.Header)
+	h.syncGrokQuota(sess.acc, resp.Header)
 
 	hasAttachments := len(attachments) > 0
 	if req.Stream {
-		h.streamChat(w, req.Model, spec, token, publicBase, hasAttachments, text, resp.Body)
+		h.streamChat(w, req.Model, spec, sess.token, publicBase, hasAttachments, text, resp.Body)
 		return
 	}
-	h.collectChat(w, req.Model, spec, token, publicBase, hasAttachments, text, resp.Body)
+	h.collectChat(w, req.Model, spec, sess.token, publicBase, hasAttachments, text, resp.Body)
 }
 
 func (h *Handler) buildChatPayload(ctx context.Context, token string, spec ModelSpec, text string, fileAttachments []string, videoCfg *VideoConfig) (map[string]interface{}, error) {
@@ -1420,10 +1580,7 @@ func (h *Handler) streamImageGeneration(w http.ResponseWriter, body io.Reader, t
 		return nil
 	})
 
-	urls = uniqueStrings(urls)
-	if n > 0 && len(urls) > n {
-		urls = urls[:n]
-	}
+	urls = normalizeGeneratedImageURLs(urls, n)
 
 	for i, u := range urls {
 		val, err := h.imageOutputValue(context.Background(), token, u, format)
@@ -1482,54 +1639,23 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	acc, token, err := h.selectAccount(r.Context())
+	sess, err := h.openChatAccountSession(r.Context())
 	if err != nil {
 		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	release := h.trackAccount(acc)
-	defer release()
-	switched := false
-
-	doChatWithSwitch := func(payload map[string]interface{}) (*http.Response, error) {
-		resp, err := h.client.doChat(r.Context(), token, payload)
-		if err == nil {
-			return resp, nil
-		}
-		status := classifyAccountStatusFromError(err.Error())
-		h.markAccountStatus(r.Context(), acc, err)
-		if !switched && (status == "403" || status == "429") {
-			switched = true
-			// switch account once
-			release()
-			var err2 error
-			acc, token, err2 = h.selectAccount(r.Context())
-			if err2 != nil {
-				return nil, err
-			}
-			release = h.trackAccount(acc)
-			resp2, err3 := h.client.doChat(r.Context(), token, payload)
-			if err3 == nil {
-				return resp2, nil
-			}
-			status2 := classifyAccountStatusFromError(err3.Error())
-			h.markAccountStatus(r.Context(), acc, err3)
-			_ = status2
-			return nil, err3
-		}
-		return nil, err
-	}
+	defer sess.Close()
 
 	onePayload := h.client.chatPayload(spec, req.Prompt, true, req.N)
 	if req.Stream {
-		resp, err := doChatWithSwitch(onePayload)
+		resp, err := h.doChatWithAutoSwitch(r.Context(), sess, onePayload)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
-		h.syncGrokQuota(acc, resp.Header)
-		h.streamImageGeneration(w, resp.Body, token, req.ResponseFormat, req.N)
+		h.syncGrokQuota(sess.acc, resp.Header)
+		h.streamImageGeneration(w, resp.Body, sess.token, req.ResponseFormat, req.N)
 		return
 	}
 
@@ -1548,7 +1674,7 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	deadline := time.Now().Add(60 * time.Second)
 	for i := 0; i < maxAttempts; i++ {
 		attempts++
-		cur := normalizeImageURLs(urls, 0)
+		cur := normalizeGeneratedImageURLs(urls, 0)
 		if len(cur) >= req.N {
 			urls = cur
 			stoppedReason = "enough"
@@ -1560,12 +1686,12 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 		}
 		prompt2 := req.Prompt
 		payload := h.client.chatPayload(spec, strings.TrimSpace(prompt2), true, 1)
-		resp, err := doChatWithSwitch(payload)
+		resp, err := h.doChatWithAutoSwitch(r.Context(), sess, payload)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		h.syncGrokQuota(acc, resp.Header)
+		h.syncGrokQuota(sess.acc, resp.Header)
 		err = parseUpstreamLines(resp.Body, func(line map[string]interface{}) error {
 			if mr, ok := line["modelResponse"].(map[string]interface{}); ok {
 				urls = append(urls, extractImageURLs(mr)...)
@@ -1582,14 +1708,14 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 			http.Error(w, "stream parse error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		next := normalizeImageURLs(urls, 0)
+		next := normalizeGeneratedImageURLs(urls, 0)
 		urls = next
 	}
 	if stoppedReason == "" {
 		stoppedReason = "max-attempts"
 	}
 
-	urls = normalizeImageURLs(urls, req.N)
+	urls = normalizeGeneratedImageURLs(urls, req.N)
 	if len(urls) == 0 {
 		urls = appendImageCandidates(urls, uniqueStrings(debugHTTP), uniqueStrings(debugAsset), req.N)
 	}
@@ -1602,7 +1728,7 @@ func (h *Handler) HandleImagesGenerations(w http.ResponseWriter, r *http.Request
 	publicBase := detectPublicBaseURL(r)
 	data := make([]map[string]interface{}, 0, len(urls))
 	for _, u := range urls {
-		val, err := h.imageOutputValue(r.Context(), token, u, req.ResponseFormat)
+		val, err := h.imageOutputValue(r.Context(), sess.token, u, req.ResponseFormat)
 		if err != nil {
 			slog.Warn("grok image convert failed", "url", u, "error", err)
 			if field == "url" {
@@ -1659,6 +1785,41 @@ func (h *Handler) buildImageEditPayload(spec ModelSpec, prompt string, imageURLs
 		"disableMemory":   false,
 		"forceSideBySide": false,
 	}
+}
+
+func (h *Handler) buildImageEditRequestPayload(
+	ctx context.Context,
+	token string,
+	spec ModelSpec,
+	prompt string,
+	inputs []imageEditUploadInput,
+) (map[string]interface{}, error) {
+	imageURLs := make([]string, 0, len(inputs))
+	for _, in := range inputs {
+		dataURI := dataURIFromBytes(in.mime, in.data)
+		_, fileURI, err := h.uploadSingleInput(ctx, token, dataURI)
+		if err != nil {
+			return nil, fmt.Errorf("image upload failed: %w", err)
+		}
+		u := strings.TrimSpace(fileURI)
+		if u == "" {
+			return nil, fmt.Errorf("image upload failed: empty file uri")
+		}
+		if !strings.HasPrefix(strings.ToLower(u), "http://") && !strings.HasPrefix(strings.ToLower(u), "https://") {
+			u = "https://assets.grok.com/" + strings.TrimLeft(u, "/")
+		}
+		imageURLs = append(imageURLs, u)
+	}
+
+	parentPostID := ""
+	if len(imageURLs) > 0 {
+		if postID, err := h.client.createMediaPost(ctx, token, "MEDIA_POST_TYPE_IMAGE", "", imageURLs[0]); err == nil {
+			parentPostID = postID
+		} else {
+			slog.Warn("grok image edit create post failed, continue without parentPostId", "error", err)
+		}
+	}
+	return h.buildImageEditPayload(spec, prompt, imageURLs, parentPostID), nil
 }
 
 func isAllowedEditImageMime(mime string) bool {
@@ -1724,15 +1885,14 @@ func (h *Handler) HandleImagesEdits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acc, token, err := h.selectAccount(r.Context())
+	sess, err := h.openChatAccountSession(r.Context())
 	if err != nil {
 		http.Error(w, "no available grok token: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	release := h.trackAccount(acc)
-	defer release()
+	defer sess.Close()
 
-	imageURLs := make([]string, 0, len(files))
+	uploads := make([]imageEditUploadInput, 0, len(files))
 	for _, fh := range files {
 		file, err := fh.Open()
 		if err != nil {
@@ -1767,46 +1927,31 @@ func (h *Handler) HandleImagesEdits(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unsupported image type. supported: png, jpg, webp", http.StatusBadRequest)
 			return
 		}
-
-		dataURI := dataURIFromBytes(mime, data)
-		_, fileURI, err := h.uploadSingleInput(r.Context(), token, dataURI)
-		if err != nil {
-			h.markAccountStatus(r.Context(), acc, err)
-			http.Error(w, "image upload failed: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		u := strings.TrimSpace(fileURI)
-		if u == "" {
-			http.Error(w, "image upload failed: empty file uri", http.StatusBadGateway)
-			return
-		}
-		if !strings.HasPrefix(strings.ToLower(u), "http://") && !strings.HasPrefix(strings.ToLower(u), "https://") {
-			u = "https://assets.grok.com/" + strings.TrimLeft(u, "/")
-		}
-		imageURLs = append(imageURLs, u)
+		uploads = append(uploads, imageEditUploadInput{
+			mime: mime,
+			data: data,
+		})
 	}
 
-	parentPostID := ""
-	if len(imageURLs) > 0 {
-		if postID, err := h.client.createMediaPost(r.Context(), token, "MEDIA_POST_TYPE_IMAGE", "", imageURLs[0]); err == nil {
-			parentPostID = postID
-		} else {
-			slog.Warn("grok image edit create post failed, continue without parentPostId", "error", err)
-		}
+	rawPayload, err := h.buildImageEditRequestPayload(r.Context(), sess.token, spec, prompt, uploads)
+	if err != nil {
+		h.markAccountStatus(r.Context(), sess.acc, err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
-
-	rawPayload := h.buildImageEditPayload(spec, prompt, imageURLs, parentPostID)
+	rebuildPayload := func(token string) (map[string]interface{}, error) {
+		return h.buildImageEditRequestPayload(r.Context(), token, spec, prompt, uploads)
+	}
 
 	if stream {
-		resp, err := h.client.doChat(r.Context(), token, rawPayload)
+		resp, err := h.doChatWithAutoSwitchRebuild(r.Context(), sess, &rawPayload, rebuildPayload)
 		if err != nil {
-			h.markAccountStatus(r.Context(), acc, err)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
-		h.syncGrokQuota(acc, resp.Header)
-		h.streamImageGeneration(w, resp.Body, token, responseFormat, n)
+		h.syncGrokQuota(sess.acc, resp.Header)
+		h.streamImageGeneration(w, resp.Body, sess.token, responseFormat, n)
 		return
 	}
 
@@ -1817,13 +1962,12 @@ func (h *Handler) HandleImagesEdits(w http.ResponseWriter, r *http.Request) {
 
 	var urls []string
 	for i := 0; i < callsNeeded; i++ {
-		resp, err := h.client.doChat(r.Context(), token, rawPayload)
+		resp, err := h.doChatWithAutoSwitchRebuild(r.Context(), sess, &rawPayload, rebuildPayload)
 		if err != nil {
-			h.markAccountStatus(r.Context(), acc, err)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		h.syncGrokQuota(acc, resp.Header)
+		h.syncGrokQuota(sess.acc, resp.Header)
 		err = parseUpstreamLines(resp.Body, func(line map[string]interface{}) error {
 			if mr, ok := line["modelResponse"].(map[string]interface{}); ok {
 				urls = append(urls, extractImageURLs(mr)...)
@@ -1837,19 +1981,16 @@ func (h *Handler) HandleImagesEdits(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	urls = uniqueStrings(urls)
+	urls = normalizeGeneratedImageURLs(urls, n)
 	if len(urls) == 0 {
 		http.Error(w, "no image generated", http.StatusBadGateway)
 		return
-	}
-	if len(urls) > n {
-		urls = urls[:n]
 	}
 
 	field := imageResponseField(responseFormat)
 	data := make([]map[string]interface{}, 0, len(urls))
 	for _, u := range urls {
-		val, err := h.imageOutputValue(r.Context(), token, u, responseFormat)
+		val, err := h.imageOutputValue(r.Context(), sess.token, u, responseFormat)
 		if err != nil {
 			slog.Warn("grok image edit convert failed", "url", u, "error", err)
 			if field == "url" {
