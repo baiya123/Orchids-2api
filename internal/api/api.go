@@ -593,6 +593,24 @@ func (a *API) HandleAccountByID(w http.ResponseWriter, r *http.Request) {
 						jwt, jwtErr := orchidsClient.GetToken()
 						if jwtErr == nil && strings.TrimSpace(jwt) != "" {
 							acc.Token = jwt
+							if sid, sub := clerk.ParseSessionInfoFromJWT(jwt); sub != "" {
+								if acc.SessionID == "" && sid != "" {
+									acc.SessionID = sid
+								}
+								if acc.UserID == "" {
+									acc.UserID = sub
+								}
+							}
+							if strings.TrimSpace(acc.UserID) != "" {
+								creditsInfo, creditsErr := orchids.FetchCreditsWithProxy(r.Context(), jwt, acc.UserID, proxyFunc)
+								if creditsErr != nil {
+									slog.Warn("Orchids credits sync failed on fallback refresh", "account", acc.Name, "error", creditsErr)
+								} else if creditsInfo != nil {
+									acc.Subscription = strings.ToLower(creditsInfo.Plan)
+									acc.UsageCurrent = creditsInfo.Credits
+									acc.UsageLimit = orchids.PlanCreditLimit(creditsInfo.Plan)
+								}
+							}
 							refreshErr = nil
 							slog.Warn("Orchids refresh: no active sessions, fallback token refresh succeeded", "account_id", id)
 						} else if jwtErr != nil {
